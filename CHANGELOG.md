@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.3
+
+**`--help` ends with the combinations.** A flag list answers what `--rm-all`
+means, not how to clear one project — and the scope lived in a different flag
+on a different line. All three commands now print the working forms together:
+the listing and the delete of that same selection, the substring form, the bare
+`--rm-all` shown as refused, and `--everywhere` as the way to ask for the sweep.
+
 ## 0.6.2
 
 **A bare `--rm-all` refuses instead of selecting the whole machine.** Unscoped

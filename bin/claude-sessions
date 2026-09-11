@@ -81,14 +81,27 @@ Summary of one session, grouped by topic (English unless --sum-orig):
 
 Delete selection (combine freely; substring and -p narrow it further):
   --rm IDS          comma-separated session ids; confirms, then deletes
-  --rm-all          every session the filters above select (needs --apply)
-  --everywhere      allow --rm-all with no -p and no substring: all projects
+  --rm-all          every session the current filters select — see below
+  --everywhere      the only way to run --rm-all with no scope at all
   --older-than N    sessions untouched for more than N days
   --max-turns N     sessions with N turns or fewer
   --apply           required by --older-than/--max-turns, which dry-run otherwise
   --yes, -y         skip the confirmation prompt (required when stdin is a pipe)
   --dry-run         report only, never delete
   --trash DIR       trash location (default: $HOME/.cache/ide-sessions-trash)
+
+What deletes what — the scope comes from the same flags as the listing:
+
+  claude-sessions -p                     list this project's sessions
+  claude-sessions -p --rm-all            …select all of them, print, delete nothing
+  claude-sessions -p --rm-all --apply    …and delete them
+
+  claude-sessions k8s --rm-all --apply   every session whose dir matches "k8s"
+  claude-sessions --rm-all               refused: nothing narrows it
+  claude-sessions --rm-all --everywhere  every project on this machine, printed first
+
+  claude-sessions -p --older-than 30 --apply     this project, older than 30 days
+  claude-sessions --max-turns 2 --apply          trivial sessions, everywhere
 
 Deleted files move to the trash dir, so a mistake is recoverable.
 The live session ($CLAUDE_CODE_SESSION_ID) is never deleted.

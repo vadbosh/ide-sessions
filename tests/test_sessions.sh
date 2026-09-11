@@ -460,6 +460,16 @@ fi
 # as "older than nothing" and appears in no help text.
 echo "--rm-all"
 
+# The help has to answer "how do I clear this project" without a reading of the
+# source: the combination, not the flags one by one.
+for cmd in claude-sessions codex-sessions opencode-sessions; do
+    out="$("$ROOT/bin/$cmd" --help 2>&1)"
+    contains "$cmd --help shows the scoped form" "$out" "$cmd -p --rm-all --apply"
+    contains "$cmd --help shows the refusal"     "$out" "refused: nothing narrows it"
+    contains "$cmd --help shows --everywhere"    "$out" "--rm-all --everywhere"
+done
+
+
 mkdir -p "$CLAUDE_DIR/projects/-bulk" "$CLAUDE_DIR/projects/-keep"
 for i in 1 2 3; do
     python3 - "$CLAUDE_DIR/projects/-bulk/2222222$i-2222-3333-4444-555555555555.jsonl" <<'PY2'
