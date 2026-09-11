@@ -8,19 +8,21 @@ Codex CLI and opencode — including the one you lost track of.**
 ```
 $ claude-sessions -n 3
     SESSION ID (full)                    LAST       TURNS  DATE        DIR
-*   bdc2f598-3b6a-4e6f-a648-10ba0f1d4360 14s ago    217    09-11 09:59 /44
+*   bdc2f598-3b6a-4e6f-a648-10ba0f1d4360 14s ago    217    09-11 09:59 /srv/infra
     a7f9d1e9-59af-4c04-8aba-584f84474da4 2m ago     18     09-11 09:56 /tmp
     4bce8fb3-df02-4082-9a5e-14f7588c2a52 3m ago     34     09-11 09:56 /tmp
 
 $ claude-sessions --sum bdc2f598-3b6a-4e6f-a648-10ba0f1d4360
 ### State recovery and backup pipeline
-- Restored /mnt/2hdd/M_backup state from knowledge base, not chat history.
+- Restored /srv/infra/backup state from knowledge base, not chat history.
 - Git log shows 15+ refactoring commits from 2026-08-28 (cb66366 → 20b3fbf).
 
 ### Qdrant database cleanup
-- Removed unnecessary directories from /AI_P/Qdrant/data.
+- Removed unnecessary directories from /srv/infra/qdrant/data.
 - Confirmed memory collection health: 766 live points, green status.
 ```
+
+The directories are stand-ins — the rest of that output is real.
 
 ---
 
@@ -35,10 +37,10 @@ started in one cluster directory can carry a whole day of work about another,
 and `--resume` will not find it where you expect. The listing shows the id, the
 directory a session is really bound to, and how recent it is.
 
-**What was in it.** A transcript answers that only to someone willing to read
-it again. `--sum` gives back four bullets per topic — and always in English,
-whatever language the session was held in, so a summary can be skimmed by
-someone who did not run the session.
+**What was in it.** Remembering means reading the whole transcript again.
+`--sum` gives back 2-4 bullets per topic, five topics at most — and always in
+English, whatever language the session was held in, so a summary can be skimmed
+by someone who did not run the session.
 
 ## Install
 
