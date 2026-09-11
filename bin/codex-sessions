@@ -24,6 +24,7 @@ set -euo pipefail
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 SESSIONS_DIR="$CODEX_HOME/sessions"
 TRASH_ROOT="${IDE_SESSIONS_TRASH:-$HOME/.cache/ide-sessions-trash}"
+SUM_CACHE="${IDE_SESSIONS_SUM_CACHE:-$HOME/.cache/ide-sessions-summaries}"
 LIMIT=0
 FILTER=""
 FULL_PATH=0
@@ -34,10 +35,16 @@ MAX_TURNS=""
 APPLY=0
 ASSUME_YES=0
 DRY_RUN=0
+SUM_ID=""
+SUM_MODEL="${IDE_SESSIONS_SUM_MODEL:-}"
+SUM_GAP=45
+SUM_REFRESH=0
+SUM_RAW=0
 
 usage() {
   cat <<'EOF'
 Usage: codex-sessions [-n LIMIT] [-f] [-p] [substring]
+       codex-sessions --sum <ID>
        codex-sessions --rm <ID>[,<ID>...]
        codex-sessions --older-than DAYS | --max-turns N --apply
 
@@ -45,6 +52,13 @@ Usage: codex-sessions [-n LIMIT] [-f] [-p] [substring]
   -f                full dir path instead of last 3 components
   -p                only sessions whose cwd == $PWD exactly
   substring         filter by dir substring
+
+Summary of one session (English, grouped by topic):
+  --sum ID          summarize that session; the result is cached per rollout
+  --sum-model M     model to summarize with (default: the one Codex is set to)
+  --sum-gap MIN     minutes of silence that start a new topic (default: 45)
+  --sum-refresh     ignore the cached summary and ask the model again
+  --sum-raw         print the extracted digest only — no model call, no cost
 
 Delete selection (combine freely; substring and -p narrow it further):
   --rm IDS          comma-separated session ids; confirms, then deletes
@@ -63,6 +77,11 @@ while [ $# -gt 0 ]; do
     -f) FULL_PATH=1; shift ;;
     -p) PROJECT_SCOPE=1; shift ;;
     --rm) RM_IDS="$2"; shift 2 ;;
+    --sum) SUM_ID="$2"; shift 2 ;;
+    --sum-model) SUM_MODEL="$2"; shift 2 ;;
+    --sum-gap) SUM_GAP="$2"; shift 2 ;;
+    --sum-refresh) SUM_REFRESH=1; shift ;;
+    --sum-raw) SUM_RAW=1; shift ;;
     --older-than) OLDER_THAN="$2"; shift 2 ;;
     --max-turns) MAX_TURNS="$2"; shift 2 ;;
     --trash) TRASH_ROOT="$2"; shift 2 ;;
@@ -74,6 +93,257 @@ while [ $# -gt 0 ]; do
     *) FILTER="$1"; shift ;;
   esac
 done
+
+# ── summary of one session ──────────────────────────────────────────────────
+#
+# A rollout is thousands of lines; what a person wants back a week later is
+# four bullets. The work is split in two: a local pass that throws away
+# everything a summary cannot use (tool output, injected context blocks,
+# reasoning traces), and one model call over what is left. Only the first pass
+# knows Codex's on-disk format — everything after it is the same in all three
+# scripts.
+#
+# The summary is written in English whatever language the session was held in,
+# because that is the language the digest is asked for; a purely local
+# extraction could not do that, which is why a model is called at all.
+
+# The digest. Reads the rollout, prints a compact per-topic block.
+# Topics are cut where the work actually stopped: a silence longer than
+# --sum-gap, or a change of working directory.
+sum_digest() {
+  python3 - "$1" "$SUM_GAP" <<'PY'
+import json, re, sys, datetime
+
+path, gap_min = sys.argv[1], int(sys.argv[2])
+gap = gap_min * 60
+
+# Codex prepends the environment, the skills list and the user's AGENTS.md to
+# the first user message. That text is configuration, not a request, and would
+# otherwise be read as the session's subject.
+NOISE = ('<environment_context>', '<user_instructions>', '<stdin>',
+         '# AGENTS.md', '<plan_tool_description>', '<skills_instructions>',
+         '<multi_agent_mode>', 'You have 1 past memory file')
+TAGS = re.compile(r'<(environment_context|user_instructions|skills_instructions)>'
+                  r'.*?</\1>', re.S)
+AGENTS_MD = re.compile(r'# AGENTS\.md instructions.*?</INSTRUCTIONS>', re.S)
+
+def clean(t):
+    t = AGENTS_MD.sub('', TAGS.sub('', t or '')).strip()
+    for p in NOISE:
+        if t.startswith(p):
+            return ''
+    return t
+
+def epoch(ts):
+    try:
+        return datetime.datetime.fromisoformat(
+            (ts or '').replace('Z', '+00:00')).timestamp()
+    except ValueError:
+        return 0.0
+
+def blocks(content):
+    # Newer rollouts carry the text in content blocks; older ones in a string.
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return '\n'.join(b.get('text', '') for b in content
+                         if isinstance(b, dict) and b.get('type')
+                         in ('input_text', 'output_text', 'text'))
+    return ''
+
+# Two rollout formats are in circulation. Up to codex-cli 0.135 the turns are
+# `event_msg/user_message` and `agent_message`; from 0.154 they are
+# `response_item/message` with a role. A file written across an upgrade holds
+# both, which would double every turn — so the newer form wins when present and
+# the older is used only for files that have nothing else.
+items, events, tools_seen, cwd = [], [], [], ''
+with open(path, errors='replace') as fh:
+    for line in fh:
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        p = d.get('payload') or {}
+        kind, sub = d.get('type'), p.get('type')
+        ep = epoch(d.get('timestamp'))
+        if kind in ('session_meta', 'turn_context'):
+            # A resumed session can move; the later cwd is the one that counts.
+            cwd = p.get('cwd') or cwd
+            continue
+        if kind == 'response_item' and sub == 'message':
+            role = p.get('role')
+            # 'developer' is Codex talking to itself: skills, memory hints,
+            # multi-agent rules. None of it is session content.
+            if role not in ('user', 'assistant'):
+                continue
+            txt = clean(blocks(p.get('content')))
+            if txt:
+                items.append({'ep': ep, 'role': role, 'txt': txt,
+                              'tools': [], 'cwd': cwd})
+        elif kind == 'event_msg' and sub in ('user_message', 'agent_message'):
+            txt = clean(p.get('message'))
+            if txt:
+                events.append({'ep': ep,
+                               'role': 'user' if sub == 'user_message' else 'assistant',
+                               'txt': txt, 'tools': [], 'cwd': cwd})
+        elif kind == 'response_item' and sub in ('function_call', 'custom_tool_call'):
+            # A shell call carries its command in arguments — that is tool
+            # output, which a summary must not quote. The name is enough.
+            tools_seen.append({'ep': ep, 'role': 'tool', 'txt': '',
+                               'tools': [p.get('name') or '?'], 'cwd': cwd})
+
+turns = sorted((items or events) + tools_seen, key=lambda t: t['ep'])
+
+if not any(t['txt'] for t in turns):
+    sys.exit(3)
+
+# ── segment ─────────────────────────────────────────────────────────────────
+segments, cur, last_ep, last_cwd = [], [], None, None
+for t in turns:
+    boundary = (last_ep is not None and t['ep'] and t['ep'] - last_ep > gap) or \
+               (t['cwd'] and last_cwd and t['cwd'] != last_cwd)
+    if boundary and cur:
+        segments.append(cur)
+        cur = []
+    cur.append(t)
+    last_ep = t['ep'] or last_ep
+    last_cwd = t['cwd'] or last_cwd
+if cur:
+    segments.append(cur)
+
+def when(ep):
+    return datetime.datetime.fromtimestamp(ep).strftime('%Y-%m-%d %H:%M') if ep else '?'
+
+def cut(s, n):
+    s = ' '.join(s.split())
+    return s if len(s) <= n else s[:n - 1] + '…'
+
+# Both ends of a segment carry meaning — the ask at the start, the outcome at
+# the end. The middle is where repetition lives, so that is what is dropped.
+def sample(items, keep):
+    if len(items) <= keep:
+        return items
+    head = keep // 2
+    return items[:head] + items[-(keep - head):]
+
+out = []
+for i, seg in enumerate(segments, 1):
+    users = [t for t in seg if t['role'] == 'user' and t['txt']]
+    bots = [t for t in seg if t['role'] == 'assistant' and t['txt']]
+    tools = {}
+    for t in seg:
+        for name in t['tools']:
+            tools[name] = tools.get(name, 0) + 1
+    seg_cwd = next((t['cwd'] for t in seg if t['cwd']), '?')
+    stamps = [t['ep'] for t in seg if t['ep']]
+    out.append('## part %d — %s — %s → %s — %d turns'
+               % (i, seg_cwd, when(stamps[0] if stamps else 0),
+                  when(stamps[-1] if stamps else 0), len(users) + len(bots)))
+    for t in sample(users, 8):
+        out.append('ASKED: ' + cut(t['txt'], 400))
+    for t in sample(bots, 4):
+        out.append('REPLIED: ' + cut(t['txt'], 220))
+    if tools:
+        top = sorted(tools.items(), key=lambda kv: -kv[1])[:8]
+        out.append('TOOLS: ' + ', '.join('%s x%d' % (k, v) for k, v in top))
+    out.append('')
+
+print('\n'.join(out))
+PY
+}
+
+# What the model is asked for. Kept next to the digest so the two are read
+# together: the digest decides what the model can see, this decides what it
+# does with it.
+SUM_PROMPT='Below is a machine-made digest of one AI coding session: the user'"'"'s asks, short excerpts of the replies, and tool counts, already split into parts.
+
+Write a summary of what was DONE in that session.
+
+Rules:
+- Write in English only. One session can mix languages — Russian, German, any
+  other, sometimes inside a single sentence. Translate all of it; never leave a
+  phrase in the original language and never answer in it.
+- Keep verbatim, untranslated: code, file paths, commands, flags, identifiers,
+  branch names, error strings.
+- One "### " heading per distinct topic, 4-8 words, naming the actual subject.
+- Under each heading, 2-4 bullets. A bullet is <= 14 words, past tense, and names
+  something concrete: a file, a command, a tool, a decision, a number.
+- Merge parts that are the same topic. At most 5 headings for the whole session.
+- Say what was decided or found, not what was discussed.
+- No preamble, no closing remarks, no restating these rules.
+- Do not read any file and do not run any command: the digest is all there is.'
+
+if [ -n "$SUM_ID" ]; then
+  rollout=$(find "$SESSIONS_DIR" -name "rollout-*$SUM_ID.jsonl" -print -quit 2>/dev/null || true)
+  if [ -z "$rollout" ]; then
+    echo "No rollout for session $SUM_ID under $SESSIONS_DIR" >&2
+    echo "List the ids with: codex-sessions" >&2
+    exit 1
+  fi
+
+  digest=$(sum_digest "$rollout") || {
+    echo "Nothing to summarize: $SUM_ID has no user or agent messages." >&2
+    exit 1
+  }
+
+  if [ "$SUM_RAW" = 1 ]; then
+    printf '%s\n' "$digest"
+    exit 0
+  fi
+
+  # Codex offers one model family per account and no price list on disk, so
+  # there is nothing to choose between: the session's own model summarizes,
+  # with reasoning turned down because a digest needs none. --sum-model
+  # overrides, and no model name is pinned in this file.
+  model="${SUM_MODEL:-}"
+  src_mtime=$(stat -c %Y "$rollout" 2>/dev/null || echo 0)
+  key="ide-sessions-sum v1 src=$src_mtime model=${model:-default} gap=$SUM_GAP"
+  cache_file="$SUM_CACHE/codex-$SUM_ID.md"
+
+  # The cache is keyed by the rollout's mtime, so a session that has since been
+  # resumed re-summarizes itself and one that has not costs nothing twice.
+  if [ "$SUM_REFRESH" != 1 ] && [ -f "$cache_file" ] &&
+     [ "$(head -1 "$cache_file")" = "<!-- $key -->" ]; then
+    tail -n +2 "$cache_file"
+    exit 0
+  fi
+
+  command -v codex >/dev/null 2>&1 || {
+    echo "codex CLI not found — needed to write the summary." >&2
+    echo "Use --sum-raw for the extracted digest without a model." >&2
+    exit 1
+  }
+
+  last_msg=$(mktemp)
+  trap 'rm -f "$last_msg"' EXIT
+
+  # -o writes the final message alone; stdout also carries hook lines, token
+  # counts and reasoning, none of which belong in a summary.
+  # Skills, MCP servers and hooks are switched off for this one call: they cost
+  # input tokens on every run and a digest needs none of them.
+  set -- exec --sandbox read-only --skip-git-repo-check \
+      -o "$last_msg" \
+      -c model_reasoning_effort="low" \
+      -c orchestrator.skills.enabled=false \
+      -c orchestrator.mcp.enabled=false \
+      -c features.hooks=false
+  [ -n "$model" ] && set -- "$@" -m "$model"
+
+  printf '%s\n\n%s\n' "$SUM_PROMPT" "$digest" | codex "$@" - >/dev/null 2>&1 || true
+  summary=$(cat "$last_msg" 2>/dev/null || true)
+
+  if [ -z "$summary" ]; then
+    echo "The model returned nothing. Re-run with --sum-raw to see the digest." >&2
+    exit 1
+  fi
+
+  mkdir -p "$SUM_CACHE"
+  { printf '<!-- %s -->\n' "$key"; printf '%s\n' "$summary"; } > "$cache_file"
+  # Which model wrote this goes to stderr, so `--sum | …` stays pure summary.
+  echo "summarized with ${model:-the configured Codex model}" >&2
+  printf '%s\n' "$summary"
+  exit 0
+fi
 
 DELETE_MODE=0
 [ -n "$RM_IDS$OLDER_THAN$MAX_TURNS" ] && DELETE_MODE=1

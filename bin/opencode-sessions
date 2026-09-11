@@ -29,6 +29,7 @@ set -euo pipefail
 DATA_DIR="${OPENCODE_DATA_DIR:-$HOME/.local/share/opencode}"
 DB="$DATA_DIR/opencode.db"
 TRASH_ROOT="${IDE_SESSIONS_TRASH:-$HOME/.cache/ide-sessions-trash}"
+SUM_CACHE="${IDE_SESSIONS_SUM_CACHE:-$HOME/.cache/ide-sessions-summaries}"
 LIMIT=0
 FILTER=""
 FULL_PATH=0
@@ -39,6 +40,11 @@ MAX_TURNS=""
 APPLY=0
 ASSUME_YES=0
 DRY_RUN=0
+SUM_ID=""
+SUM_MODEL="${IDE_SESSIONS_SUM_MODEL:-}"
+SUM_GAP=45
+SUM_REFRESH=0
+SUM_RAW=0
 
 # Every table keyed by session_id; `session` itself is keyed by id.
 CHILD_TABLES="part message todo session_share session_message session_context_epoch session_input"
@@ -46,6 +52,7 @@ CHILD_TABLES="part message todo session_share session_message session_context_ep
 usage() {
   cat <<'EOF'
 Usage: opencode-sessions [-n LIMIT] [-f] [-p] [substring]
+       opencode-sessions --sum <ID>
        opencode-sessions --rm <ID>[,<ID>...]
        opencode-sessions --older-than DAYS | --max-turns N --apply
 
@@ -53,6 +60,13 @@ Usage: opencode-sessions [-n LIMIT] [-f] [-p] [substring]
   -f                full dir path instead of last 3 components
   -p                only sessions whose directory == $PWD exactly
   substring         filter by dir substring
+
+Summary of one session (English, grouped by topic):
+  --sum ID          summarize that session; the result is cached per session
+  --sum-model M     model to summarize with (default: the one opencode uses)
+  --sum-gap MIN     minutes of silence that start a new topic (default: 45)
+  --sum-refresh     ignore the cached summary and ask the model again
+  --sum-raw         print the extracted digest only — no model call, no cost
 
 Delete selection (combine freely; substring and -p narrow it further):
   --rm IDS          comma-separated session ids; confirms, then deletes
@@ -73,6 +87,11 @@ while [ $# -gt 0 ]; do
     -f) FULL_PATH=1; shift ;;
     -p) PROJECT_SCOPE=1; shift ;;
     --rm) RM_IDS="$2"; shift 2 ;;
+    --sum) SUM_ID="$2"; shift 2 ;;
+    --sum-model) SUM_MODEL="$2"; shift 2 ;;
+    --sum-gap) SUM_GAP="$2"; shift 2 ;;
+    --sum-refresh) SUM_REFRESH=1; shift ;;
+    --sum-raw) SUM_RAW=1; shift ;;
     --older-than) OLDER_THAN="$2"; shift 2 ;;
     --max-turns) MAX_TURNS="$2"; shift 2 ;;
     --trash) TRASH_ROOT="$2"; shift 2 ;;
@@ -100,14 +119,36 @@ for n in "$OLDER_THAN" "$MAX_TURNS"; do
   esac
 done
 
-if ! command -v sqlite3 >/dev/null 2>&1; then
-  echo "sqlite3 not found" >&2
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "python3 not found — needed to read the opencode database" >&2
   exit 1
 fi
 if [ ! -f "$DB" ]; then
   echo "no opencode db at $DB" >&2
   exit 1
 fi
+
+# The queries go through Python's bundled sqlite3 module rather than the
+# `sqlite3` CLI. The CLI is a separate package that is simply absent on many
+# machines — this one included, where the script printed "sqlite3 not found"
+# and listed nothing — while the module ships with Python itself.
+db_tsv() {
+  python3 - "$DB" "$1" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1], timeout=10)
+for row in con.execute(sys.argv[2]):
+    print('\t'.join('' if v is None else str(v) for v in row))
+PY
+}
+
+db_exec() {
+  python3 - "$DB" "$1" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1], timeout=10)
+con.executescript(sys.argv[2])
+con.commit()
+PY
+}
 
 now=$(date +%s)
 
@@ -126,7 +167,222 @@ shorten_dir() {
   echo "$p" | awk -F/ '{ n=NF; if (n<=3) print $0; else print $(n-2)"/"$(n-1)"/"$n }'
 }
 
-rows=$(sqlite3 -separator $'\t' "$DB" "
+# ── summary of one session ──────────────────────────────────────────────────
+#
+# A session is thousands of rows in `part`; what a person wants back a week
+# later is four bullets. The work is split in two: a local pass that throws away
+# everything a summary cannot use (tool output, reasoning, step markers), and
+# one model call over what is left. Only the first pass knows opencode's schema
+# — everything after it is the same in all three scripts.
+#
+# The summary is written in English whatever language the session was held in,
+# because that is the language the digest is asked for; a purely local
+# extraction could not do that, which is why a model is called at all.
+
+# The digest. Reads the session's messages, prints a compact per-topic block.
+# Topics are cut where the work actually stopped: a silence longer than
+# --sum-gap. The directory cannot change inside an opencode session, so it is
+# not a boundary here.
+sum_digest() {
+  python3 - "$DB" "$1" "$SUM_GAP" <<'PY'
+import json, sqlite3, sys, datetime
+
+db, sid, gap_min = sys.argv[1], sys.argv[2], int(sys.argv[3])
+gap = gap_min * 60
+con = sqlite3.connect(db, timeout=10)
+
+row = con.execute("SELECT directory FROM session WHERE id = ?", (sid,)).fetchone()
+if row is None:
+    sys.exit(4)
+cwd = row[0] or '?'
+
+turns = []
+for role, created, data in con.execute("""
+        SELECT json_extract(m.data, '$.role'), p.time_created, p.data
+        FROM part p JOIN message m ON m.id = p.message_id
+        WHERE p.session_id = ?
+        ORDER BY p.time_created, p.id""", (sid,)):
+    try:
+        d = json.loads(data)
+    except ValueError:
+        continue
+    ep = (created or 0) / 1000.0
+    if d.get('type') == 'text':
+        txt = (d.get('text') or '').strip()
+        if txt:
+            turns.append({'ep': ep, 'role': role or '?', 'txt': txt,
+                          'tools': []})
+    elif d.get('type') == 'tool':
+        # The tool's input is its command — that is tool output, which a
+        # summary must not quote. The name is enough.
+        turns.append({'ep': ep, 'role': 'tool', 'txt': '',
+                      'tools': [d.get('tool') or '?']})
+
+if not any(t['txt'] for t in turns):
+    sys.exit(3)
+
+# ── segment ─────────────────────────────────────────────────────────────────
+segments, cur, last_ep = [], [], None
+for t in turns:
+    if last_ep is not None and t['ep'] and t['ep'] - last_ep > gap and cur:
+        segments.append(cur)
+        cur = []
+    cur.append(t)
+    last_ep = t['ep'] or last_ep
+if cur:
+    segments.append(cur)
+
+def when(ep):
+    return datetime.datetime.fromtimestamp(ep).strftime('%Y-%m-%d %H:%M') if ep else '?'
+
+def cut(s, n):
+    s = ' '.join(s.split())
+    return s if len(s) <= n else s[:n - 1] + '…'
+
+# Both ends of a segment carry meaning — the ask at the start, the outcome at
+# the end. The middle is where repetition lives, so that is what is dropped.
+def sample(items, keep):
+    if len(items) <= keep:
+        return items
+    head = keep // 2
+    return items[:head] + items[-(keep - head):]
+
+out = []
+for i, seg in enumerate(segments, 1):
+    users = [t for t in seg if t['role'] == 'user' and t['txt']]
+    bots = [t for t in seg if t['role'] == 'assistant' and t['txt']]
+    tools = {}
+    for t in seg:
+        for name in t['tools']:
+            tools[name] = tools.get(name, 0) + 1
+    stamps = [t['ep'] for t in seg if t['ep']]
+    out.append('## part %d — %s — %s → %s — %d turns'
+               % (i, cwd, when(stamps[0] if stamps else 0),
+                  when(stamps[-1] if stamps else 0), len(users) + len(bots)))
+    for t in sample(users, 8):
+        out.append('ASKED: ' + cut(t['txt'], 400))
+    for t in sample(bots, 4):
+        out.append('REPLIED: ' + cut(t['txt'], 220))
+    if tools:
+        top = sorted(tools.items(), key=lambda kv: -kv[1])[:8]
+        out.append('TOOLS: ' + ', '.join('%s x%d' % (k, v) for k, v in top))
+    out.append('')
+
+print('\n'.join(out))
+PY
+}
+
+# What the model is asked for. Kept next to the digest so the two are read
+# together: the digest decides what the model can see, this decides what it
+# does with it.
+SUM_PROMPT='Below is a machine-made digest of one AI coding session: the user'"'"'s asks, short excerpts of the replies, and tool counts, already split into parts.
+
+Write a summary of what was DONE in that session.
+
+Rules:
+- Write in English only. One session can mix languages — Russian, German, any
+  other, sometimes inside a single sentence. Translate all of it; never leave a
+  phrase in the original language and never answer in it.
+- Keep verbatim, untranslated: code, file paths, commands, flags, identifiers,
+  branch names, error strings.
+- One "### " heading per distinct topic, 4-8 words, naming the actual subject.
+- Under each heading, 2-4 bullets. A bullet is <= 14 words, past tense, and names
+  something concrete: a file, a command, a tool, a decision, a number.
+- Merge parts that are the same topic. At most 5 headings for the whole session.
+- Say what was decided or found, not what was discussed.
+- No preamble, no closing remarks, no restating these rules.
+- Do not read any file and do not run any command: the digest is all there is.'
+
+if [ -n "$SUM_ID" ]; then
+  digest=$(sum_digest "$SUM_ID") || {
+    case $? in
+      4) echo "No session $SUM_ID in $DB" >&2
+         echo "List the ids with: opencode-sessions" >&2 ;;
+      *) echo "Nothing to summarize: $SUM_ID has no text messages." >&2 ;;
+    esac
+    exit 1
+  }
+
+  if [ "$SUM_RAW" = 1 ]; then
+    printf '%s\n' "$digest"
+    exit 0
+  fi
+
+  # opencode resolves the model itself — config, then last used. Passing one
+  # here would override a choice the user already made for this machine, so
+  # --sum-model is the only way a model name enters this script.
+  model="${SUM_MODEL:-}"
+  src_mtime=$(db_tsv "SELECT time_updated FROM session WHERE id = '$SUM_ID';")
+  key="ide-sessions-sum v1 src=${src_mtime:-0} model=${model:-default} gap=$SUM_GAP"
+  cache_file="$SUM_CACHE/opencode-$SUM_ID.md"
+
+  # The cache is keyed by the session's own time_updated, so a session that has
+  # since been continued re-summarizes itself and one that has not costs
+  # nothing twice.
+  if [ "$SUM_REFRESH" != 1 ] && [ -f "$cache_file" ] &&
+     [ "$(head -1 "$cache_file")" = "<!-- $key -->" ]; then
+    tail -n +2 "$cache_file"
+    exit 0
+  fi
+
+  command -v opencode >/dev/null 2>&1 || {
+    echo "opencode CLI not found — needed to write the summary." >&2
+    echo "Use --sum-raw for the extracted digest without a model." >&2
+    exit 1
+  }
+
+  stream=$(mktemp)
+  trap 'rm -f "$stream"' EXIT
+
+  # --format json, not the pretty output: the default prints a header line and
+  # ANSI colour, which would end up inside the cached summary.
+  set -- run --pure --format json --title "ide-sessions --sum $SUM_ID"
+  [ -n "$model" ] && set -- "$@" --model "$model"
+  opencode "$@" "$(printf '%s\n\n%s\n' "$SUM_PROMPT" "$digest")" \
+    > "$stream" 2>/dev/null || true
+
+  summary=$(python3 - "$stream" <<'PY'
+import json, sys
+parts = []
+for line in open(sys.argv[1], errors='replace'):
+    try:
+        ev = json.loads(line)
+    except ValueError:
+        continue
+    if ev.get('type') == 'text':
+        parts.append((ev.get('part') or {}).get('text') or '')
+print('\n'.join(p for p in parts if p).strip())
+PY
+)
+
+  # Running opencode writes a session of its own. Left alone, every summary
+  # would add a row to the very list this script exists to keep readable, so
+  # the scratch session is removed by the title it was given.
+  scratch=$(db_tsv "SELECT id FROM session WHERE title = 'ide-sessions --sum $SUM_ID';" || true)
+  if [ -n "$scratch" ]; then
+    scratch_list=$(printf '%s\n' "$scratch" | sed "s/.*/'&'/" | paste -sd, -)
+    db_exec "
+BEGIN IMMEDIATE;
+$(for t in $CHILD_TABLES; do echo "DELETE FROM $t WHERE session_id IN ($scratch_list);"; done)
+DELETE FROM session WHERE id IN ($scratch_list);
+COMMIT;
+" || true
+  fi
+
+  if [ -z "$summary" ]; then
+    echo "The model returned nothing. Re-run with --sum-raw to see the digest." >&2
+    exit 1
+  fi
+
+  mkdir -p "$SUM_CACHE"
+  { printf '<!-- %s -->\n' "$key"; printf '%s\n' "$summary"; } > "$cache_file"
+  # Which model wrote this goes to stderr, so `--sum | …` stays pure summary.
+  echo "summarized with ${model:-the model opencode is set to}" >&2
+  printf '%s\n' "$summary"
+  exit 0
+fi
+
+rows=$(db_tsv "
 SELECT s.id, s.directory, s.time_updated,
        (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id) AS msgs,
        s.cost
@@ -171,20 +427,25 @@ if [ "$DELETE_MODE" = 1 ]; then
   ids_file=$(mktemp)
   trap 'rm -f "$ids_file"' EXIT
 
-  # Expand to descendants. Ids all originate from the DB, so interpolating them
-  # into SQL is safe; the seed list goes through a TEMP table regardless.
-  {
-    echo "CREATE TEMP TABLE seed(id TEXT);"
-    printf '%s\n' "$seeds" | sed "s/.*/INSERT INTO seed VALUES('&');/"
-    cat <<'SQL'
+  # Expand to descendants. The seed ids are passed as bound parameters, so no
+  # id is ever interpolated into SQL text.
+  printf '%s\n' "$seeds" | python3 - "$DB" > "$ids_file" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1], timeout=10)
+seeds = [s.strip() for s in sys.stdin.read().splitlines() if s.strip()]
+con.execute("CREATE TEMP TABLE seed(id TEXT)")
+con.executemany("INSERT INTO seed VALUES (?)", [(s,) for s in seeds])
+rows = con.execute("""
 WITH RECURSIVE targets(id) AS (
   SELECT id FROM session WHERE id IN (SELECT id FROM seed)
   UNION
   SELECT s.id FROM session s JOIN targets t ON s.parent_id = t.id
 )
-SELECT id FROM targets;
-SQL
-  } | sqlite3 "$DB" > "$ids_file"
+SELECT id FROM targets
+""")
+for (sid,) in rows:
+    print(sid)
+PY
 
   n_seeds=$(printf '%s\n' "$seeds" | grep -c . || true)
   n_total=$(grep -c . < "$ids_file" || true)
@@ -193,7 +454,7 @@ SQL
   echo "Sessions selected for deletion:"
   echo
   printf "%-30s %-10s %-6s %-8s %-11s %s\n" "SESSION ID" "LAST" "MSGS" "COST" "DATE" "DIR"
-  sqlite3 -separator $'\t' "$DB" "
+  db_tsv "
     SELECT s.id, s.directory, s.time_updated,
            (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id),
            s.cost,
@@ -211,7 +472,7 @@ SQL
   echo
   echo "Row counts to be removed:"
   for t in $CHILD_TABLES; do
-    c=$(sqlite3 "$DB" "SELECT COUNT(*) FROM $t WHERE session_id IN ($in_list);")
+    c=$(db_tsv "SELECT COUNT(*) FROM $t WHERE session_id IN ($in_list);")
     [ "$c" = 0 ] || printf '  %-24s %s\n' "$t" "$c"
   done
   printf '  %-24s %s\n' "session" "$n_total"
@@ -251,36 +512,56 @@ SQL
   dump="$trash/rows.sql"
 
   # Dump before deleting: the DB is too big to copy wholesale for every prune.
-  {
-    echo "-- opencode session rows removed $stamp"
-    echo "BEGIN;"
-    for t in session $CHILD_TABLES; do
-      if [ "$t" = session ]; then w="id IN ($in_list)"; else w="session_id IN ($in_list)"; fi
-      sqlite3 "$DB" ".mode insert $t" "SELECT * FROM $t WHERE $w;"
-    done
-    echo "COMMIT;"
-  } > "$dump"
+  # This replaces the CLI's `.mode insert`, quoting values the same way sqlite
+  # does so the dump can be replayed with either tool.
+  python3 - "$DB" "$dump" "$stamp" "session $CHILD_TABLES" "$in_list" <<'PY'
+import sqlite3, sys
+
+db, out_path, stamp, tables, in_list = sys.argv[1:6]
+con = sqlite3.connect(db, timeout=10)
+
+def literal(v):
+    if v is None:
+        return 'NULL'
+    if isinstance(v, (int, float)):
+        return repr(v)
+    if isinstance(v, bytes):
+        return "X'%s'" % v.hex()
+    return "'%s'" % str(v).replace("'", "''")
+
+with open(out_path, 'w') as out:
+    out.write('-- opencode session rows removed %s\n' % stamp)
+    out.write('BEGIN;\n')
+    for t in tables.split():
+        col = 'id' if t == 'session' else 'session_id'
+        cur = con.execute('SELECT * FROM %s WHERE %s IN (%s)' % (t, col, in_list))
+        names = [d[0] for d in cur.description]
+        for row in cur:
+            out.write('INSERT INTO %s(%s) VALUES(%s);\n'
+                      % (t, ','.join(names), ','.join(literal(v) for v in row)))
+    out.write('COMMIT;\n')
+PY
 
   cp "$ids_file" "$trash/.session-ids"
 
-  # .timeout rather than PRAGMA busy_timeout: the pragma echoes its value.
-  sqlite3 "$DB" <<SQL
-.timeout 10000
+  db_exec "
 BEGIN IMMEDIATE;
 $(for t in $CHILD_TABLES; do echo "DELETE FROM $t WHERE session_id IN ($in_list);"; done)
 DELETE FROM session WHERE id IN ($in_list);
 COMMIT;
-SQL
+"
 
-  left=$(sqlite3 "$DB" "SELECT COUNT(*) FROM session WHERE id IN ($in_list);")
+  left=$(db_tsv "SELECT COUNT(*) FROM session WHERE id IN ($in_list);")
 
   echo
   echo "Deleted $n_total session(s). Remaining matching rows in session: $left (expect 0)."
   echo "Row dump written to"
   echo "  $dump  ($(wc -l < "$dump" | tr -d ' ') lines)"
   echo
-  echo "Restore:         sqlite3 $DB < $dump"
-  echo "Reclaim space:   sqlite3 $DB 'VACUUM;'   (optional, rewrites the 133M file)"
+  # Spelled out with python3 because the sqlite3 CLI is often not installed;
+  # `sqlite3 $DB < $dump` does the same where it is.
+  echo "Restore:         python3 -c \"import sqlite3,sys;sqlite3.connect('$DB').executescript(open('$dump').read())\""
+  echo "Reclaim space:   python3 -c \"import sqlite3;sqlite3.connect('$DB').execute('VACUUM')\"   (optional, rewrites the db file)"
   exit 0
 fi
 

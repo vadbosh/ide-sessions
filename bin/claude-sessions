@@ -37,6 +37,7 @@ set -euo pipefail
 CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 PROJECTS_DIR="$CONFIG_DIR/projects"
 TRASH_ROOT="${IDE_SESSIONS_TRASH:-$HOME/.cache/ide-sessions-trash}"
+SUM_CACHE="${IDE_SESSIONS_SUM_CACHE:-$HOME/.cache/ide-sessions-summaries}"
 LIMIT=0
 FILTER=""
 FULL_PATH=0
@@ -47,10 +48,16 @@ MAX_TURNS=""
 APPLY=0
 ASSUME_YES=0
 DRY_RUN=0
+SUM_ID=""
+SUM_MODEL="${IDE_SESSIONS_SUM_MODEL:-}"
+SUM_GAP=45
+SUM_REFRESH=0
+SUM_RAW=0
 
 usage() {
   cat <<'EOF'
 Usage: claude-sessions [-n LIMIT] [-f] [-p] [substring]
+       claude-sessions --sum <ID>
        claude-sessions --rm <ID>[,<ID>...]
        claude-sessions --older-than DAYS | --max-turns N --apply
 
@@ -58,6 +65,13 @@ Usage: claude-sessions [-n LIMIT] [-f] [-p] [substring]
   -f                full dir path instead of last 3 components
   -p                scope to the exact project-hash dir for $PWD (like 'rtk gain -p')
   substring         filter by dir substring
+
+Summary of one session (English, grouped by topic):
+  --sum ID          summarize that session; the result is cached per transcript
+  --sum-model M     model to summarize with (default: cheapest one available)
+  --sum-gap MIN     minutes of silence that start a new topic (default: 45)
+  --sum-refresh     ignore the cached summary and ask the model again
+  --sum-raw         print the extracted digest only — no model call, no cost
 
 Delete selection (combine freely; substring and -p narrow it further):
   --rm IDS          comma-separated session ids; confirms, then deletes
@@ -79,6 +93,11 @@ while [ $# -gt 0 ]; do
     -f) FULL_PATH=1; shift ;;
     -p) PROJECT_SCOPE=1; shift ;;
     --rm) RM_IDS="$2"; shift 2 ;;
+    --sum) SUM_ID="$2"; shift 2 ;;
+    --sum-model) SUM_MODEL="$2"; shift 2 ;;
+    --sum-gap) SUM_GAP="$2"; shift 2 ;;
+    --sum-refresh) SUM_REFRESH=1; shift ;;
+    --sum-raw) SUM_RAW=1; shift ;;
     --older-than) OLDER_THAN="$2"; shift 2 ;;
     --max-turns) MAX_TURNS="$2"; shift 2 ;;
     --trash) TRASH_ROOT="$2"; shift 2 ;;
@@ -90,6 +109,266 @@ while [ $# -gt 0 ]; do
     *) FILTER="$1"; shift ;;
   esac
 done
+
+# ── summary of one session ──────────────────────────────────────────────────
+#
+# A transcript is thousands of lines; what a person wants back a week later is
+# four bullets. The work is split in two: a local pass that throws away
+# everything a summary cannot use (tool output, hook chatter, slash-command
+# plumbing), and one model call over what is left. Only the first pass knows
+# this IDE's on-disk format — everything after it is the same in all three
+# scripts.
+#
+# The summary is written in English whatever language the session was held in,
+# because that is the language the digest is asked for; a purely local
+# extraction could not do that, which is why a model is called at all.
+
+# The digest. Reads the transcript, prints a compact per-topic block.
+# Topics are cut where the work actually stopped: a silence longer than
+# --sum-gap, or a change of working directory.
+sum_digest() {
+  python3 - "$1" "$SUM_GAP" <<'PY'
+import json, re, sys, datetime
+
+path, gap_min = sys.argv[1], int(sys.argv[2])
+gap = gap_min * 60
+
+# Slash commands, hook output and skill preambles are typed by the user but
+# written by the machine. They say nothing about the work and would otherwise
+# dominate a short session.
+NOISE = ('<local-command-', '<command-name>', '<command-message>',
+         '<command-args>', '<bash-input>', '<bash-stdout>', '<bash-stderr>',
+         'Caveat: The messages below were generated',
+         'Base directory for this skill:')
+REMINDER = re.compile(r'<system-reminder>.*?</system-reminder>', re.S)
+
+def clean(t):
+    t = REMINDER.sub('', t or '').strip()
+    for p in NOISE:
+        if t.startswith(p):
+            return ''
+    return t
+
+turns = []
+with open(path, errors='replace') as fh:
+    for line in fh:
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if d.get('type') not in ('user', 'assistant') or d.get('isSidechain'):
+            continue
+        try:
+            ep = datetime.datetime.fromisoformat(
+                (d.get('timestamp') or '').replace('Z', '+00:00')).timestamp()
+        except ValueError:
+            ep = 0.0
+        content = (d.get('message') or {}).get('content')
+        text, tools = [], []
+        if isinstance(content, str):
+            text.append(content)
+        elif isinstance(content, list):
+            for b in content:
+                if not isinstance(b, dict):
+                    continue
+                if b.get('type') == 'text':
+                    text.append(b.get('text', ''))
+                elif b.get('type') == 'tool_use':
+                    tools.append(b.get('name', '?'))
+        txt = clean('\n'.join(x for x in text if x))
+        if not txt and not tools:
+            continue
+        turns.append({'ep': ep, 'role': d['type'], 'txt': txt,
+                      'tools': tools, 'cwd': d.get('cwd') or ''})
+
+if not turns:
+    sys.exit(3)
+
+# ── segment ─────────────────────────────────────────────────────────────────
+segments, cur, last_ep, last_cwd = [], [], None, None
+for t in turns:
+    boundary = (last_ep is not None and t['ep'] and t['ep'] - last_ep > gap) or \
+               (t['cwd'] and last_cwd and t['cwd'] != last_cwd)
+    if boundary and cur:
+        segments.append(cur)
+        cur = []
+    cur.append(t)
+    last_ep = t['ep'] or last_ep
+    last_cwd = t['cwd'] or last_cwd
+if cur:
+    segments.append(cur)
+
+def when(ep):
+    return datetime.datetime.fromtimestamp(ep).strftime('%Y-%m-%d %H:%M') if ep else '?'
+
+def cut(s, n):
+    s = ' '.join(s.split())
+    return s if len(s) <= n else s[:n - 1] + '…'
+
+# Both ends of a segment carry meaning — the ask at the start, the outcome at
+# the end. The middle is where repetition lives, so that is what is dropped.
+def sample(items, keep):
+    if len(items) <= keep:
+        return items
+    head = keep // 2
+    return items[:head] + items[-(keep - head):]
+
+out = []
+for i, seg in enumerate(segments, 1):
+    users = [t for t in seg if t['role'] == 'user' and t['txt']]
+    bots = [t for t in seg if t['role'] == 'assistant' and t['txt']]
+    tools = {}
+    for t in seg:
+        for name in t['tools']:
+            tools[name] = tools.get(name, 0) + 1
+    cwd = next((t['cwd'] for t in seg if t['cwd']), '?')
+    out.append('## part %d — %s — %s → %s — %d turns'
+               % (i, cwd, when(seg[0]['ep']), when(seg[-1]['ep']), len(seg)))
+    for t in sample(users, 8):
+        out.append('ASKED: ' + cut(t['txt'], 400))
+    for t in sample(bots, 4):
+        out.append('REPLIED: ' + cut(t['txt'], 220))
+    if tools:
+        top = sorted(tools.items(), key=lambda kv: -kv[1])[:8]
+        out.append('TOOLS: ' + ', '.join('%s x%d' % (k, v) for k, v in top))
+    out.append('')
+
+print('\n'.join(out))
+PY
+}
+
+# What the model is asked for. Kept next to the digest so the two are read
+# together: the digest decides what the model can see, this decides what it
+# does with it.
+SUM_PROMPT='Below is a machine-made digest of one AI coding session: the user'"'"'s asks, short excerpts of the replies, and tool counts, already split into parts.
+
+Write a summary of what was DONE in that session.
+
+Rules:
+- Write in English only. One session can mix languages — Russian, German, any
+  other, sometimes inside a single sentence. Translate all of it; never leave a
+  phrase in the original language and never answer in it.
+- Keep verbatim, untranslated: code, file paths, commands, flags, identifiers,
+  branch names, error strings.
+- One "### " heading per distinct topic, 4-8 words, naming the actual subject.
+- Under each heading, 2-4 bullets. A bullet is <= 14 words, past tense, and names
+  something concrete: a file, a command, a tool, a decision, a number.
+- Merge parts that are the same topic. At most 5 headings for the whole session.
+- Say what was decided or found, not what was discussed.
+- No preamble, no closing remarks, no restating these rules.'
+
+# Model choice, in order: what the user asked for, then the cheapest priced
+# model of this IDE's provider found in a models.dev catalogue already on disk,
+# then the CLI's own alias for its small model. No model name or version is
+# pinned in this file — a new cheap model is picked up as soon as the catalogue
+# on disk knows about it.
+sum_pick_model() {
+  [ -n "$SUM_MODEL" ] && { printf '%s' "$SUM_MODEL"; return; }
+  local cat picked
+  for cat in "${IDE_SESSIONS_MODELS_JSON:-}" \
+             "$HOME/.cache/ide-sessions/models.dev.json" \
+             "$HOME/.cache/opencode/models.json"; do
+    [ -n "$cat" ] && [ -f "$cat" ] || continue
+    picked=$(python3 - "$cat" anthropic <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    db = json.load(open(sys.argv[1]))
+    models = db[sys.argv[2]]['models']
+except Exception:
+    sys.exit(1)
+best = None
+for mid, m in models.items():
+    cost = (m.get('cost') or {}).get('input')
+    ctx = (m.get('limit') or {}).get('context') or 0
+    # A zero price means "not priced here" (promo, subscription) far more often
+    # than "free", and picking one on that basis is how a summary silently
+    # lands on a model nobody meant to use.
+    if not cost or cost <= 0 or ctx < 100000:
+        continue
+    if best is None or cost < best[0]:
+        best = (cost, mid)
+print(best[1] if best else '')
+PY
+)
+    [ -n "$picked" ] && { printf '%s' "$picked"; return; }
+  done
+  printf 'haiku'
+}
+
+if [ -n "$SUM_ID" ]; then
+  transcript=$(find "$PROJECTS_DIR" -maxdepth 2 -name "$SUM_ID.jsonl" -print -quit 2>/dev/null || true)
+  if [ -z "$transcript" ]; then
+    echo "No transcript for session $SUM_ID under $PROJECTS_DIR" >&2
+    echo "List the ids with: claude-sessions" >&2
+    exit 1
+  fi
+
+  digest=$(sum_digest "$transcript") || {
+    echo "Nothing to summarize: $SUM_ID has no user or assistant turns." >&2
+    exit 1
+  }
+
+  if [ "$SUM_RAW" = 1 ]; then
+    printf '%s\n' "$digest"
+    exit 0
+  fi
+
+  model=$(sum_pick_model)
+  src_mtime=$(stat -c %Y "$transcript" 2>/dev/null || echo 0)
+  key="ide-sessions-sum v1 src=$src_mtime model=$model gap=$SUM_GAP"
+  cache_file="$SUM_CACHE/claude-$SUM_ID.md"
+
+  # The cache is keyed by the transcript's mtime, so a session that has since
+  # been resumed re-summarizes itself and one that has not costs nothing twice.
+  if [ "$SUM_REFRESH" != 1 ] && [ -f "$cache_file" ] &&
+     [ "$(head -1 "$cache_file")" = "<!-- $key -->" ]; then
+    tail -n +2 "$cache_file"
+    exit 0
+  fi
+
+  command -v claude >/dev/null 2>&1 || {
+    echo "claude CLI not found — needed to write the summary." >&2
+    echo "Use --sum-raw for the extracted digest without a model." >&2
+    exit 1
+  }
+
+  # --setting-sources '' and an empty MCP config are not tidiness: with the
+  # user's CLAUDE.md, skills and MCP servers loaded, the same one-line prompt
+  # measured 40 179 input tokens against 4 591 without them.
+  summary=$(printf '%s\n\n%s\n' "$SUM_PROMPT" "$digest" |
+    claude -p \
+      --model "$model" \
+      --setting-sources '' \
+      --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
+      --disable-slash-commands \
+      --disallowedTools "Bash Edit Write Read Glob Grep WebFetch WebSearch Agent Task" \
+      2>/dev/null) || summary=""
+
+  # A model name from a catalogue can be one this account cannot call. Rather
+  # than fail, fall back to whatever model the CLI would have chosen itself.
+  if [ -z "$summary" ] && [ -z "$SUM_MODEL" ]; then
+    summary=$(printf '%s\n\n%s\n' "$SUM_PROMPT" "$digest" |
+      claude -p \
+        --setting-sources '' \
+        --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
+        --disable-slash-commands \
+        --disallowedTools "Bash Edit Write Read Glob Grep WebFetch WebSearch Agent Task" \
+        2>/dev/null) || summary=""
+    model="(CLI default)"
+  fi
+
+  if [ -z "$summary" ]; then
+    echo "The model returned nothing. Re-run with --sum-raw to see the digest." >&2
+    exit 1
+  fi
+
+  mkdir -p "$SUM_CACHE"
+  { printf '<!-- %s -->\n' "$key"; printf '%s\n' "$summary"; } > "$cache_file"
+  # Which model wrote this goes to stderr, so `--sum | …` stays pure summary.
+  echo "summarized with $model" >&2
+  printf '%s\n' "$summary"
+  exit 0
+fi
 
 DELETE_MODE=0
 [ -n "$RM_IDS$OLDER_THAN$MAX_TURNS" ] && DELETE_MODE=1
