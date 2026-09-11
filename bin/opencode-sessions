@@ -54,6 +54,7 @@ usage() {
   cat <<'EOF'
 Usage: opencode-sessions [-n LIMIT] [-f] [-p] [substring]
        opencode-sessions --sum <ID>
+       opencode-sessions --sum-orig <ID>
        opencode-sessions --rm <ID>[,<ID>...]
        opencode-sessions --older-than DAYS | --max-turns N --apply
 
@@ -68,7 +69,7 @@ Summary of one session, grouped by topic (English unless --sum-orig):
   --sum-gap MIN     minutes of silence that start a new topic (default: 45)
   --sum-refresh     ignore the cached summary and ask the model again
   --sum-raw         print the extracted digest only — no model call, no cost
-  --sum-orig        summarize in the session's own language, not English
+  --sum-orig [ID]   summarize in the session's own language, not English
 
 Delete selection (combine freely; substring and -p narrow it further):
   --rm IDS          comma-separated session ids; confirms, then deletes
@@ -94,7 +95,12 @@ while [ $# -gt 0 ]; do
     --sum-gap) SUM_GAP="$2"; shift 2 ;;
     --sum-refresh) SUM_REFRESH=1; shift ;;
     --sum-raw) SUM_RAW=1; shift ;;
-    --sum-orig) SUM_LANG=orig; shift ;;
+    # `--sum-orig <ID>` is the same request as `--sum <ID> --sum-orig`, and
+    # typing both flags for one session is ceremony. A word after it that is
+    # not itself a flag is the id.
+    --sum-orig)
+      SUM_LANG=orig; shift
+      case "${1:-}" in ''|-*) ;; *) SUM_ID="$1"; shift ;; esac ;;
     --older-than) OLDER_THAN="$2"; shift 2 ;;
     --max-turns) MAX_TURNS="$2"; shift 2 ;;
     --trash) TRASH_ROOT="$2"; shift 2 ;;

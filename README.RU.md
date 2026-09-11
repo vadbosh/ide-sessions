@@ -109,14 +109,14 @@ codex-sessions    --sum <ID>
 opencode-sessions --sum <ID>
 
 claude-sessions --sum <ID> --sum-raw       # только выжимка — без модели и без затрат
-claude-sessions --sum <ID> --sum-orig      # на языке самой сессии
+claude-sessions --sum-orig <ID>            # на языке самой сессии
 claude-sessions --sum <ID> --sum-gap 90    # 90 минут тишины начинают новую тему
 claude-sessions --sum <ID> --sum-refresh   # игнорировать кэш, спросить заново
 claude-sessions --sum <ID> --sum-model X   # суммировать конкретной моделью
 ```
 
-`--sum-orig` пишет сводку на языке, на котором шла сессия; если языков было
-несколько — на том, которым больше писал пользователь. Кэшируются они
+`--sum-orig <ID>` пишет сводку на языке, на котором шла сессия; если языков
+было несколько — на том, которым больше писал пользователь. Кэшируются они
 раздельно, поэтому у одной сессии могут лежать английская сводка для коллеги и
 русская для себя, и одна не затирает другую.
 
@@ -128,7 +128,7 @@ $ codex-sessions --sum 01a05994-7729-7e32-99c9-f6b53f98199e
 - Replaced `env` with `safe-env` because project rules prohibited full dumps.
 - Ran `safe-env` successfully with secrets masked; exit code was `0`.
 
-$ opencode-sessions --sum ses_fa66c4184ffepvA00VLoagntRt --sum-orig
+$ opencode-sessions --sum-orig ses_fa66c4184ffepvA00VLoagntRt
 ### Отказ от `env` в пользу `safe-env`
 - Запрос `env` отклонён: дамп окружения пишет ключи в транскрипт.
 - Выполнен `safe-env`; токены вышли как `<REDACTED:N>`.

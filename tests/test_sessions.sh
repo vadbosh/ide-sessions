@@ -386,6 +386,15 @@ out="$("$ROOT/bin/claude-sessions" --sum "$SID" --sum-orig --sum-model pinned 2>
 contains "--sum-orig reads its own entry"    "$out" "### orig heading"
 absent   "--sum-orig does not read English"  "$out" "### en heading"
 
+# --sum-orig <ID> means the same as --sum <ID> --sum-orig; nobody should have to
+# name the session through one flag and the language through another.
+out="$("$ROOT/bin/claude-sessions" --sum-orig "$SID" --sum-model pinned 2>&1)"
+contains "--sum-orig takes the id itself" "$out" "### orig heading"
+
+# …and it must not eat the next flag as an id.
+out="$("$ROOT/bin/claude-sessions" --sum-orig --sum "$SID" --sum-model pinned 2>&1)"
+contains "a flag after --sum-orig stays a flag" "$out" "### orig heading"
+
 # ── report ──────────────────────────────────────────────────────────────────
 echo
 echo "$PASS passed, $FAIL failed"

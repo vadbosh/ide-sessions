@@ -109,14 +109,14 @@ codex-sessions    --sum <ID>
 opencode-sessions --sum <ID>
 
 claude-sessions --sum <ID> --sum-raw       # the digest only — no model, no cost
-claude-sessions --sum <ID> --sum-orig      # in the session's own language
+claude-sessions --sum-orig <ID>            # in the session's own language
 claude-sessions --sum <ID> --sum-gap 90    # 90 min of silence starts a new topic
 claude-sessions --sum <ID> --sum-refresh   # ignore the cache, ask again
 claude-sessions --sum <ID> --sum-model X   # summarize with a specific model
 ```
 
-`--sum-orig` writes the summary in the language the session was held in, taking
-the one the user typed most where several were used. The two are cached
+`--sum-orig <ID>` writes the summary in the language the session was held
+in, taking the one the user typed most where several were used. The two are cached
 separately, so a session can hold an English summary for a colleague and a
 Russian one for whoever ran it, and neither overwrites the other.
 
@@ -129,7 +129,7 @@ $ codex-sessions --sum 01a05994-7729-7e32-99c9-f6b53f98199e
 - Replaced `env` with `safe-env` because project rules prohibited full dumps.
 - Ran `safe-env` successfully with secrets masked; exit code was `0`.
 
-$ opencode-sessions --sum ses_fa66c4184ffepvA00VLoagntRt --sum-orig
+$ opencode-sessions --sum-orig ses_fa66c4184ffepvA00VLoagntRt
 ### Отказ от `env` в пользу `safe-env`
 - Запрос `env` отклонён: дамп окружения пишет ключи в транскрипт.
 - Выполнен `safe-env`; токены вышли как `<REDACTED:N>`.

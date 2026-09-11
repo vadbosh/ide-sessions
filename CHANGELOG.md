@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.2
+
+**`--sum-orig <ID>` needs no second flag.**
+
+Naming the session through one flag and the language through another —
+`--sum <ID> --sum-orig` — is ceremony for what is one request. The id can now
+follow `--sum-orig` directly; a word after it that starts with `-` is still
+read as a flag, so `--sum-orig --sum <ID>` keeps working. Both READMEs and
+`--help` show the short form.
+
 ## 0.4.1
 
 **Huawei Cloud, OpenStack and Jira credentials are masked too.**
