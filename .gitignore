@@ -1,0 +1,28 @@
+# Editor / OS scratch
+*~
+*.swp
+.DS_Store
+
+# Backups the installer writes next to a file it replaced
+*.bak
+*.bak.*
+*.orig
+*.rej
+
+# Python bytecode from the tests
+__pycache__/
+*.py[cod]
+
+# AI assistant artefacts
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+.claude/
+.codex/
+.cursor/
+.gemini/
+.ai-context/
+.memsearch/
+
+# Local release state, never shared
+.release.local

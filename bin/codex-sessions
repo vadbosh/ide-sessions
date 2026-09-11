@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+# codex-sessions: list Codex CLI sessions with their bound cwd + last-activity
+# time, sorted newest-first. Same purpose as claude-sessions, adapted to
+# Codex's on-disk layout: ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl,
+# first line is a "session_meta" event carrying session_id + cwd.
+#
+# Usage:
+#   codex-sessions              # all sessions, newest first
+#   codex-sessions -n 20        # limit to 20 rows
+#   codex-sessions <substring>  # filter by dir substring
+#   codex-sessions -p           # only sessions whose cwd == $PWD exactly
+#   codex-sessions -f           # show full dir path instead of last 3 components
+#
+# Deleting (--rm confirms and deletes; bulk criteria dry-run until --apply):
+#   codex-sessions --rm <ID>[,<ID>...]        # by session id
+#   codex-sessions --older-than 30            # older than N days
+#   codex-sessions --max-turns 2              # trivial sessions (<= N turns)
+#
+# A Codex session is a single rollout-*.jsonl with no sidecar files, so delete
+# moves just that file to a trash dir rather than unlinking it.
+
+set -euo pipefail
+
+CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+SESSIONS_DIR="$CODEX_HOME/sessions"
+TRASH_ROOT="${IDE_SESSIONS_TRASH:-$HOME/.cache/ide-sessions-trash}"
+LIMIT=0
+FILTER=""
+FULL_PATH=0
+PROJECT_SCOPE=0
+RM_IDS=""
+OLDER_THAN=""
+MAX_TURNS=""
+APPLY=0
+ASSUME_YES=0
+DRY_RUN=0
+
+usage() {
+  cat <<'EOF'
+Usage: codex-sessions [-n LIMIT] [-f] [-p] [substring]
+       codex-sessions --rm <ID>[,<ID>...]
+       codex-sessions --older-than DAYS | --max-turns N --apply
+
+  -n LIMIT          limit rows
+  -f                full dir path instead of last 3 components
+  -p                only sessions whose cwd == $PWD exactly
+  substring         filter by dir substring
+
+Delete selection (combine freely; substring and -p narrow it further):
+  --rm IDS          comma-separated session ids; confirms, then deletes
+  --older-than N    sessions untouched for more than N days
+  --max-turns N     sessions with N turns or fewer
+  --apply           required by --older-than/--max-turns, which dry-run otherwise
+  --yes, -y         skip the confirmation prompt (required when stdin is a pipe)
+  --dry-run         report only, never delete
+  --trash DIR       trash location (default: $HOME/.cache/ide-sessions-trash)
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -n) LIMIT="$2"; shift 2 ;;
+    -f) FULL_PATH=1; shift ;;
+    -p) PROJECT_SCOPE=1; shift ;;
+    --rm) RM_IDS="$2"; shift 2 ;;
+    --older-than) OLDER_THAN="$2"; shift 2 ;;
+    --max-turns) MAX_TURNS="$2"; shift 2 ;;
+    --trash) TRASH_ROOT="$2"; shift 2 ;;
+    --apply) APPLY=1; shift ;;
+    --yes|-y) ASSUME_YES=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    -*) usage >&2; echo "unknown option: $1" >&2; exit 1 ;;
+    *) FILTER="$1"; shift ;;
+  esac
+done
+
+DELETE_MODE=0
+[ -n "$RM_IDS$OLDER_THAN$MAX_TURNS" ] && DELETE_MODE=1
+
+# An explicit id list is intent enough to delete after a prompt. Bulk criteria
+# can sweep up far more than intended, so they stay dry-run until --apply.
+BULK=0
+[ -n "$OLDER_THAN$MAX_TURNS" ] && BULK=1
+
+for n in "$OLDER_THAN" "$MAX_TURNS"; do
+  case "$n" in
+    '') ;;
+    *[!0-9]*) echo "--older-than/--max-turns want a plain number, got: $n" >&2; exit 1 ;;
+  esac
+done
+
+tmpfile=$(mktemp)
+trap 'rm -f "$tmpfile"' EXIT
+
+find "$SESSIONS_DIR" -name "rollout-*.jsonl" -print0 2>/dev/null | while IFS= read -r -d '' f; do
+  mtime=$(stat -c %Y "$f" 2>/dev/null || echo 0)
+  [ "$mtime" = 0 ] && continue
+  meta=$( (head -1 "$f" || true) 2>/dev/null)
+  sid=$(printf '%s' "$meta" | python3 -c '
+import json,sys
+try:
+    d=json.loads(sys.stdin.read())
+    print(d.get("payload",{}).get("session_id",""))
+except Exception:
+    print("")
+' 2>/dev/null || true)
+  cwd=$(printf '%s' "$meta" | python3 -c '
+import json,sys
+try:
+    d=json.loads(sys.stdin.read())
+    print(d.get("payload",{}).get("cwd",""))
+except Exception:
+    print("")
+' 2>/dev/null || true)
+  [ -z "$sid" ] && continue
+  [ -z "$cwd" ] && cwd="(unknown)"
+  turns=$(wc -l < "$f" 2>/dev/null | tr -d ' ')
+  printf '%s\t%s\t%s\t%s\t%s\n' "$mtime" "$sid" "$cwd" "$turns" "$f" >> "$tmpfile"
+done
+
+now=$(date +%s)
+
+format_age() {
+  local d=$(( now - $1 ))
+  if [ "$d" -lt 60 ]; then echo "${d}s ago"
+  elif [ "$d" -lt 3600 ]; then echo "$(( d/60 ))m ago"
+  elif [ "$d" -lt 86400 ]; then echo "$(( d/3600 ))h ago"
+  else echo "$(( d/86400 ))d ago"
+  fi
+}
+
+shorten_dir() {
+  local p="$1"
+  [ "$FULL_PATH" = 1 ] && { echo "$p"; return; }
+  echo "$p" | awk -F/ '{ n=NF; if (n<=3) print $0; else print $(n-2)"/"$(n-1)"/"$n }'
+}
+
+rows=$(sort -t $'\t' -k1,1nr "$tmpfile")
+if [ "$PROJECT_SCOPE" = 1 ]; then
+  cur="$(pwd)"
+  rows=$(echo "$rows" | awk -F'\t' -v c="$cur" '$3==c')
+fi
+[ -n "$FILTER" ] && rows=$(echo "$rows" | grep -F "$FILTER" || true)
+[ "$LIMIT" != 0 ] && rows=$(echo "$rows" | head -n "$LIMIT")
+
+if [ "$DELETE_MODE" = 1 ]; then
+  candidates=$(printf '%s\n' "$rows" | awk -F'\t' \
+      -v ids="$RM_IDS" -v older="$OLDER_THAN" -v maxt="$MAX_TURNS" -v now="$now" '
+    BEGIN {
+      n = split(ids, a, ",")
+      nwant = 0
+      for (i = 1; i <= n; i++) {
+        gsub(/^[ \t]+|[ \t]+$/, "", a[i])
+        if (a[i] != "") { want[a[i]] = 1; nwant++ }
+      }
+    }
+    $2 == "" { next }
+    {
+      if (nwant > 0 && !($2 in want)) next
+      if (older != "" && (now - $1) < older * 86400) next
+      if (maxt != "" && $4 + 0 > maxt + 0) next
+      print
+    }
+  ')
+
+  if [ -z "$candidates" ]; then
+    echo "No sessions match. Nothing to delete."
+    exit 0
+  fi
+
+  paths_file=$(mktemp)
+  trap 'rm -f "$tmpfile" "$paths_file"' EXIT
+
+  echo "Sessions selected for deletion:"
+  echo
+  printf "%-38s %-10s %-6s %-11s %s\n" "SESSION ID" "LAST" "TURNS" "DATE" "DIR"
+  count=0
+  while IFS=$'\t' read -r mtime sid cwd turns fpath; do
+    [ -z "$sid" ] && continue
+    count=$(( count + 1 ))
+    date_str=$(date -d "@$mtime" +"%m-%d %H:%M" 2>/dev/null || date -r "$mtime" +"%m-%d %H:%M")
+    printf "%-38s %-10s %-6s %-11s %s\n" \
+      "$sid" "$(format_age "$mtime")" "$turns" "$date_str" "$(shorten_dir "$cwd")"
+    if [ -e "$fpath" ]; then printf '%s\n' "$fpath" >> "$paths_file"; fi
+  done <<< "$candidates"
+
+  npaths=$(wc -l < "$paths_file" | tr -d ' ')
+  total=$(tr '\n' '\0' < "$paths_file" | du -scb --files0-from=- 2>/dev/null | tail -1 | cut -f1)
+  [ -n "$total" ] || total=0
+  human=$(numfmt --to=iec --suffix=B "$total" 2>/dev/null || echo "${total}B")
+
+  echo
+  echo "$count session(s), $npaths file(s), $human total."
+
+  if [ "$DRY_RUN" = 1 ] || { [ "$BULK" = 1 ] && [ "$APPLY" != 1 ]; }; then
+    echo
+    echo "Dry run. Nothing deleted."
+    if [ "$DRY_RUN" != 1 ]; then
+      echo "To delete: re-run the same command with --apply"
+    fi
+    exit 0
+  fi
+
+  if [ "$ASSUME_YES" != 1 ]; then
+    if [ ! -t 0 ]; then
+      echo "Refusing to delete unattended: pass --yes when stdin is not a terminal." >&2
+      exit 1
+    fi
+    printf 'Delete these %s session(s)? [y/N] ' "$count"
+    read -r reply
+    case "$reply" in
+      y|Y|yes|YES) ;;
+      *) echo "Aborted."; exit 1 ;;
+    esac
+  fi
+
+  stamp=$(date +%Y%m%d-%H%M%S)
+  trash="$TRASH_ROOT/codex-$stamp"
+  mkdir -p "$trash"
+
+  moved=0
+  while IFS= read -r p; do
+    [ -e "$p" ] || continue
+    dest="$trash/${p#/}"
+    mkdir -p "$(dirname "$dest")"
+    if mv "$p" "$dest" 2>/dev/null; then
+      moved=$(( moved + 1 ))
+    else
+      echo "  ! could not move $p" >&2
+    fi
+  done < "$paths_file"
+
+  printf '%s\n' "$candidates" | cut -f2 > "$trash/.session-ids"
+
+  echo
+  echo "Deleted $count session(s): $moved file(s) moved to"
+  echo "  $trash"
+  echo
+  echo "Restore everything:  cp -a $trash/* /"
+  echo "Free the space:       delete that trash dir once you are sure"
+  exit 0
+fi
+
+printf "%-38s %-10s %-6s %-11s %s\n" "SESSION ID (full)" "LAST" "TURNS" "DATE" "DIR"
+
+while IFS=$'\t' read -r mtime sid cwd turns fpath; do
+  [ -z "$sid" ] && continue
+  age=$(format_age "$mtime")
+  date_str=$(date -d "@$mtime" +"%m-%d %H:%M" 2>/dev/null || date -r "$mtime" +"%m-%d %H:%M")
+  dir_disp=$(shorten_dir "$cwd")
+  printf "%-38s %-10s %-6s %-11s %s\n" "$sid" "$age" "$turns" "$date_str" "$dir_disp"
+done <<< "$rows"
+
+echo
+echo "Resume: cd <DIR> && codex resume <SESSION ID>"
+echo "Fork:   cd <DIR> && codex fork <SESSION ID>   (new session id, original untouched)"
+echo "Delete: codex-sessions --rm <SESSION ID>            (asks to confirm; --dry-run to preview)"

@@ -1,0 +1,300 @@
+#!/usr/bin/env bash
+# opencode-sessions: list Opencode sessions with their bound directory +
+# last-activity time, sorted newest-first. Same purpose as claude-sessions,
+# adapted to Opencode's storage: sqlite db at
+# ~/.local/share/opencode/opencode.db, table `session` (id, directory,
+# time_updated epoch-ms, cost, tokens_*, model).
+#
+# Usage:
+#   opencode-sessions              # all sessions, newest first
+#   opencode-sessions -n 20        # limit to 20 rows
+#   opencode-sessions <substring>  # filter by dir substring
+#   opencode-sessions -p           # only sessions whose directory == $PWD exactly
+#   opencode-sessions -f           # show full dir path instead of last 3 components
+#
+# Deleting (--rm confirms and deletes; bulk criteria dry-run until --apply):
+#   opencode-sessions --rm <ID>[,<ID>...]     # by session id
+#   opencode-sessions --older-than 30         # older than N days
+#   opencode-sessions --max-turns 2           # trivial sessions (<= N messages)
+#
+# Unlike the file-based IDEs, a session here is rows across 8 tables. The schema
+# declares ON DELETE CASCADE but `PRAGMA foreign_keys` defaults to OFF, so the
+# cascade would silently not fire — every table is deleted explicitly inside one
+# transaction instead. Child sessions (subagents, via parent_id) are pulled in
+# too, otherwise deleting a parent leaves them orphaned and unreachable.
+# Affected rows are dumped as INSERT statements into the trash dir first.
+
+set -euo pipefail
+
+DATA_DIR="${OPENCODE_DATA_DIR:-$HOME/.local/share/opencode}"
+DB="$DATA_DIR/opencode.db"
+TRASH_ROOT="${IDE_SESSIONS_TRASH:-$HOME/.cache/ide-sessions-trash}"
+LIMIT=0
+FILTER=""
+FULL_PATH=0
+PROJECT_SCOPE=0
+RM_IDS=""
+OLDER_THAN=""
+MAX_TURNS=""
+APPLY=0
+ASSUME_YES=0
+DRY_RUN=0
+
+# Every table keyed by session_id; `session` itself is keyed by id.
+CHILD_TABLES="part message todo session_share session_message session_context_epoch session_input"
+
+usage() {
+  cat <<'EOF'
+Usage: opencode-sessions [-n LIMIT] [-f] [-p] [substring]
+       opencode-sessions --rm <ID>[,<ID>...]
+       opencode-sessions --older-than DAYS | --max-turns N --apply
+
+  -n LIMIT          limit rows
+  -f                full dir path instead of last 3 components
+  -p                only sessions whose directory == $PWD exactly
+  substring         filter by dir substring
+
+Delete selection (combine freely; substring and -p narrow it further):
+  --rm IDS          comma-separated session ids; confirms, then deletes
+  --older-than N    sessions untouched for more than N days
+  --max-turns N     sessions with N messages or fewer
+  --apply           required by --older-than/--max-turns, which dry-run otherwise
+  --yes, -y         skip the confirmation prompt (required when stdin is a pipe)
+  --dry-run         report only, never delete
+  --trash DIR       trash location (default: $HOME/.cache/ide-sessions-trash)
+
+Child (subagent) sessions of anything selected are deleted with their parent.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -n) LIMIT="$2"; shift 2 ;;
+    -f) FULL_PATH=1; shift ;;
+    -p) PROJECT_SCOPE=1; shift ;;
+    --rm) RM_IDS="$2"; shift 2 ;;
+    --older-than) OLDER_THAN="$2"; shift 2 ;;
+    --max-turns) MAX_TURNS="$2"; shift 2 ;;
+    --trash) TRASH_ROOT="$2"; shift 2 ;;
+    --apply) APPLY=1; shift ;;
+    --yes|-y) ASSUME_YES=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    -*) usage >&2; echo "unknown option: $1" >&2; exit 1 ;;
+    *) FILTER="$1"; shift ;;
+  esac
+done
+
+DELETE_MODE=0
+[ -n "$RM_IDS$OLDER_THAN$MAX_TURNS" ] && DELETE_MODE=1
+
+# An explicit id list is intent enough to delete after a prompt. Bulk criteria
+# can sweep up far more than intended, so they stay dry-run until --apply.
+BULK=0
+[ -n "$OLDER_THAN$MAX_TURNS" ] && BULK=1
+
+for n in "$OLDER_THAN" "$MAX_TURNS"; do
+  case "$n" in
+    '') ;;
+    *[!0-9]*) echo "--older-than/--max-turns want a plain number, got: $n" >&2; exit 1 ;;
+  esac
+done
+
+if ! command -v sqlite3 >/dev/null 2>&1; then
+  echo "sqlite3 not found" >&2
+  exit 1
+fi
+if [ ! -f "$DB" ]; then
+  echo "no opencode db at $DB" >&2
+  exit 1
+fi
+
+now=$(date +%s)
+
+format_age() {
+  local d=$(( now - $1 ))
+  if [ "$d" -lt 60 ]; then echo "${d}s ago"
+  elif [ "$d" -lt 3600 ]; then echo "$(( d/60 ))m ago"
+  elif [ "$d" -lt 86400 ]; then echo "$(( d/3600 ))h ago"
+  else echo "$(( d/86400 ))d ago"
+  fi
+}
+
+shorten_dir() {
+  local p="$1"
+  [ "$FULL_PATH" = 1 ] && { echo "$p"; return; }
+  echo "$p" | awk -F/ '{ n=NF; if (n<=3) print $0; else print $(n-2)"/"$(n-1)"/"$n }'
+}
+
+rows=$(sqlite3 -separator $'\t' "$DB" "
+SELECT s.id, s.directory, s.time_updated,
+       (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id) AS msgs,
+       s.cost
+FROM session s
+WHERE s.directory IS NOT NULL AND s.directory != ''
+ORDER BY s.time_updated DESC;
+" 2>&1)
+
+if [ "$PROJECT_SCOPE" = 1 ]; then
+  cur="$(pwd)"
+  rows=$(echo "$rows" | awk -F'\t' -v c="$cur" '$2==c')
+fi
+[ -n "$FILTER" ] && rows=$(echo "$rows" | grep -F "$FILTER" || true)
+[ "$LIMIT" != 0 ] && rows=$(echo "$rows" | head -n "$LIMIT")
+
+if [ "$DELETE_MODE" = 1 ]; then
+  seeds=$(printf '%s\n' "$rows" | awk -F'\t' \
+      -v ids="$RM_IDS" -v older="$OLDER_THAN" -v maxt="$MAX_TURNS" -v now="$now" '
+    BEGIN {
+      n = split(ids, a, ",")
+      nwant = 0
+      for (i = 1; i <= n; i++) {
+        gsub(/^[ \t]+|[ \t]+$/, "", a[i])
+        if (a[i] != "") { want[a[i]] = 1; nwant++ }
+      }
+    }
+    $1 == "" { next }
+    {
+      mtime = int($3 / 1000)
+      if (nwant > 0 && !($1 in want)) next
+      if (older != "" && (now - mtime) < older * 86400) next
+      if (maxt != "" && $4 + 0 > maxt + 0) next
+      print $1
+    }
+  ')
+
+  if [ -z "$seeds" ]; then
+    echo "No sessions match. Nothing to delete."
+    exit 0
+  fi
+
+  ids_file=$(mktemp)
+  trap 'rm -f "$ids_file"' EXIT
+
+  # Expand to descendants. Ids all originate from the DB, so interpolating them
+  # into SQL is safe; the seed list goes through a TEMP table regardless.
+  {
+    echo "CREATE TEMP TABLE seed(id TEXT);"
+    printf '%s\n' "$seeds" | sed "s/.*/INSERT INTO seed VALUES('&');/"
+    cat <<'SQL'
+WITH RECURSIVE targets(id) AS (
+  SELECT id FROM session WHERE id IN (SELECT id FROM seed)
+  UNION
+  SELECT s.id FROM session s JOIN targets t ON s.parent_id = t.id
+)
+SELECT id FROM targets;
+SQL
+  } | sqlite3 "$DB" > "$ids_file"
+
+  n_seeds=$(printf '%s\n' "$seeds" | grep -c . || true)
+  n_total=$(grep -c . < "$ids_file" || true)
+  in_list=$(sed "s/.*/'&'/" "$ids_file" | paste -sd, -)
+
+  echo "Sessions selected for deletion:"
+  echo
+  printf "%-30s %-10s %-6s %-8s %-11s %s\n" "SESSION ID" "LAST" "MSGS" "COST" "DATE" "DIR"
+  sqlite3 -separator $'\t' "$DB" "
+    SELECT s.id, s.directory, s.time_updated,
+           (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id),
+           s.cost,
+           CASE WHEN s.parent_id IS NULL OR s.parent_id = '' THEN '' ELSE 'child' END
+    FROM session s WHERE s.id IN ($in_list)
+    ORDER BY s.time_updated DESC;" |
+  while IFS=$'\t' read -r sid directory tupd msgs cost kind; do
+    [ -z "$sid" ] && continue
+    mtime=$(( tupd / 1000 ))
+    date_str=$(date -d "@$mtime" +"%m-%d %H:%M" 2>/dev/null || date -r "$mtime" +"%m-%d %H:%M")
+    printf "%-30s %-10s %-6s \$%-7s %-11s %s %s\n" \
+      "$sid" "$(format_age "$mtime")" "$msgs" "$cost" "$date_str" "$(shorten_dir "$directory")" "$kind"
+  done
+
+  echo
+  echo "Row counts to be removed:"
+  for t in $CHILD_TABLES; do
+    c=$(sqlite3 "$DB" "SELECT COUNT(*) FROM $t WHERE session_id IN ($in_list);")
+    [ "$c" = 0 ] || printf '  %-24s %s\n' "$t" "$c"
+  done
+  printf '  %-24s %s\n' "session" "$n_total"
+
+  echo
+  if [ "$n_total" -gt "$n_seeds" ]; then
+    echo "$n_seeds selected + $(( n_total - n_seeds )) child session(s) = $n_total total."
+  else
+    echo "$n_total session(s)."
+  fi
+
+  if [ "$DRY_RUN" = 1 ] || { [ "$BULK" = 1 ] && [ "$APPLY" != 1 ]; }; then
+    echo
+    echo "Dry run. Nothing deleted."
+    if [ "$DRY_RUN" != 1 ]; then
+      echo "To delete: re-run the same command with --apply"
+    fi
+    exit 0
+  fi
+
+  if [ "$ASSUME_YES" != 1 ]; then
+    if [ ! -t 0 ]; then
+      echo "Refusing to delete unattended: pass --yes when stdin is not a terminal." >&2
+      exit 1
+    fi
+    printf 'Delete these %s session(s) from the database? [y/N] ' "$n_total"
+    read -r reply
+    case "$reply" in
+      y|Y|yes|YES) ;;
+      *) echo "Aborted."; exit 1 ;;
+    esac
+  fi
+
+  stamp=$(date +%Y%m%d-%H%M%S)
+  trash="$TRASH_ROOT/opencode-$stamp"
+  mkdir -p "$trash"
+  dump="$trash/rows.sql"
+
+  # Dump before deleting: the DB is too big to copy wholesale for every prune.
+  {
+    echo "-- opencode session rows removed $stamp"
+    echo "BEGIN;"
+    for t in session $CHILD_TABLES; do
+      if [ "$t" = session ]; then w="id IN ($in_list)"; else w="session_id IN ($in_list)"; fi
+      sqlite3 "$DB" ".mode insert $t" "SELECT * FROM $t WHERE $w;"
+    done
+    echo "COMMIT;"
+  } > "$dump"
+
+  cp "$ids_file" "$trash/.session-ids"
+
+  # .timeout rather than PRAGMA busy_timeout: the pragma echoes its value.
+  sqlite3 "$DB" <<SQL
+.timeout 10000
+BEGIN IMMEDIATE;
+$(for t in $CHILD_TABLES; do echo "DELETE FROM $t WHERE session_id IN ($in_list);"; done)
+DELETE FROM session WHERE id IN ($in_list);
+COMMIT;
+SQL
+
+  left=$(sqlite3 "$DB" "SELECT COUNT(*) FROM session WHERE id IN ($in_list);")
+
+  echo
+  echo "Deleted $n_total session(s). Remaining matching rows in session: $left (expect 0)."
+  echo "Row dump written to"
+  echo "  $dump  ($(wc -l < "$dump" | tr -d ' ') lines)"
+  echo
+  echo "Restore:         sqlite3 $DB < $dump"
+  echo "Reclaim space:   sqlite3 $DB 'VACUUM;'   (optional, rewrites the 133M file)"
+  exit 0
+fi
+
+printf "%-30s %-10s %-6s %-8s %-11s %s\n" "SESSION ID (full)" "LAST" "MSGS" "COST" "DATE" "DIR"
+
+while IFS=$'\t' read -r sid directory tupd msgs cost; do
+  [ -z "$sid" ] && continue
+  mtime=$(( tupd / 1000 ))
+  age=$(format_age "$mtime")
+  date_str=$(date -d "@$mtime" +"%m-%d %H:%M" 2>/dev/null || date -r "$mtime" +"%m-%d %H:%M")
+  dir_disp=$(shorten_dir "$directory")
+  printf "%-30s %-10s %-6s \$%-7s %-11s %s\n" "$sid" "$age" "$msgs" "$cost" "$date_str" "$dir_disp"
+done <<< "$rows"
+
+echo
+echo "Resume: cd <DIR> && opencode -s <SESSION ID>   (add --fork to branch instead of continuing)"
+echo "Delete: opencode-sessions --rm <SESSION ID>    (asks to confirm; --dry-run to preview)"
