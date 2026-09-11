@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.4.1
+
+**Huawei Cloud, OpenStack and Jira credentials are masked too.**
+
+Their keys have no distinctive prefix: a Huawei access key is 20 characters of
+upper case and digits, the secret 40 of base62 — indistinguishable from a git
+SHA or a build id, so tier 1 cannot claim them. The label beside the value can,
+and now does: `HW_ACCESS_KEY=`, `HUAWEICLOUD_SDK_AK=`, `OS_SECRET_KEY:`, plus
+the flag forms `--token`, `--pass` and `Authorization: Bearer`. Jira arrives in
+both tiers — `ATATT` and the legacy `at-` prefix by shape, `jira --token …` by
+the flag. The patterns and the two-tier split come from
+[env2hell](https://github.com/vadbosh/env2hell).
+
+**The documentation stopped being about Claude Code only.**
+
+Every example was a `claude-sessions` one, which read as if the other two were
+afterthoughts. Both READMEs now show all three listings side by side, the same
+session summarized through Codex and opencode, and say once that the flags are
+identical rather than repeating each command three times.
+
+**The model auto-selection is written down, per IDE.** The order was in the
+scripts and nowhere else: the catalogue lookup for Claude Code with its two
+fallbacks, the configured model plus lowered reasoning for Codex, and for
+opencode the deliberate decision not to choose — 385 models whose availability
+differs per machine is not a list to pick from silently.
+
 ## 0.4.0
 
 **Credentials in a session no longer reach the summary.**

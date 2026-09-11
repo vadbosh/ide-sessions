@@ -245,6 +245,7 @@ PROVIDER = re.compile(
     r'|(?:sk|rk)_live_[A-Za-z0-9]{20,}'
     r'|sk-(?:or-v1-|proj-|ant-)?[A-Za-z0-9-]{20,}'
     r'|ATATT[A-Za-z0-9_=.-]{20,}'
+    r'|at-[A-Za-z0-9]{30,}'
     r'|hf_[A-Za-z0-9]{30,}'
     r'|dckr_pat_[A-Za-z0-9_-]{20,}'
     r'|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*'
@@ -254,18 +255,38 @@ PROVIDER = re.compile(
 # survive: postgres://admin:pw@db/app is worth reading as "postgres, db, app".
 URL_CRED = re.compile(r'://[^/:@\s]+:([^/:@\s]{3,})@')
 
-# NAME=value and NAME: value, where the name is the only thing saying "secret".
-NAMED = re.compile(
-    r'((?:PASS|PASSWD|PASSWORD|PASSPHRASE|TOKEN|SECRET|API_?KEY|APIKEY'
-    r'|AUTH_?TOKEN|ACCESS_?KEY|SECRET_?KEY|CLIENT_?SECRET|PRIVATE_?KEY'
-    r'|CREDENTIAL)[A-Z0-9_]*)(\s*[=:]\s*)([\'"]?)([^\s\'"]{8,})',
-    re.I)
+# A label and the value after it. The label is what a secret is called; the
+# value is only required to be long, because its shape says nothing.
+#
+# Huawei Cloud and OpenStack are the reason this tier exists in this form. Their
+# access key is 20 characters of upper case and digits and the secret 40 of
+# base62 — the same shapes as a git SHA, a build id, half the identifiers in
+# ordinary output — so no pattern can take them without masking everything. The
+# variable name can, and it is right there on the line. Jira reaches here too
+# when a token is passed as --token rather than carrying its ATATT prefix.
+LABEL = (r'(?:--?)?(?:pass|passwd|password|passphrase|pass-phrase'
+         r'|token|secret|api[-_]?key|apikey|auth[-_]?token|access[-_]?key'
+         r'|secret[-_]?key|client[-_]?secret|private[-_]?key|credential'
+         r'|jira[-_]?(?:api[-_]?)?token'
+         r'|hw[-_]?(?:access|secret)(?:[-_]?key)?'
+         r'|huaweicloud?[-_]?[a-z_]*key'
+         r'|os[-_](?:access|secret)[-_]?key'
+         # …_AK and …_SK: Huawei's own SDKs spell the pair that way, and the
+         # value carries no prefix at all, so the suffix is the whole signal.
+         r'|(?:hw|huawei|huaweicloud|obs|os)[-_][a-z_0-9]*[-_]?[as]k)s?[A-Z0-9_]*')
+VALUE = r'[A-Za-z0-9+/=_.~-]{16,}'
+
+# Assignment first — NAME=value, NAME: value, Authorization: Bearer value —
+# then the flag form, --pass value. Both keep the label readable: a summary that
+# hides which credential was involved answers nothing.
+NAMED = re.compile(r'(%s)(\s*[=:]\s*(?:Bearer\s+)?)([\'"]?)(%s)' % (LABEL, VALUE), re.I)
+FLAGGED = re.compile(r'(%s)(\s+)([\'"]?)(%s)' % (LABEL, VALUE), re.I)
 
 # A line that talks about credentials at all. Only there is a long anonymous
 # run treated as a secret.
 CRED_WORD = re.compile(
     r'token|secret|password|passwd|credential|api[ _-]?key|access[ _-]?key'
-    r'|токен|пароль|секрет|ключ', re.I)
+    r'|huawei|openstack|jira|токен|пароль|секрет|ключ', re.I)
 HIGH_ENTROPY = re.compile(r'\b[A-Za-z0-9_-]{40,}\b|\b[A-Fa-f0-9]{32,}\b')
 
 def mask(m):
@@ -279,11 +300,12 @@ def redact(text):
             lambda m: '://<REDACTED:%d>@' % len(m.group(1)), line)
         # A value already masked is left alone: masking the marker again would
         # overwrite the real length with the marker's own.
-        line = NAMED.sub(
-            lambda m: m.group(0) if m.group(4).startswith('<REDACTED:')
-            else '%s%s%s<REDACTED:%d>' % (m.group(1), m.group(2),
-                                          m.group(3), len(m.group(4))),
-            line)
+        for pat in (NAMED, FLAGGED):
+            line = pat.sub(
+                lambda m: m.group(0) if m.group(4).startswith('<REDACTED:')
+                else '%s%s%s<REDACTED:%d>' % (m.group(1), m.group(2),
+                                              m.group(3), len(m.group(4))),
+                line)
         if CRED_WORD.search(line):
             line = HIGH_ENTROPY.sub(mask, line)
         out.append(line)

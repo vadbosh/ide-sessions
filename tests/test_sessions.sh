@@ -139,6 +139,41 @@ n=$(printf '%s\n' "$out" | rg -c 'api token is <REDACTED:' || true)
 if [ "$n" = 1 ]; then ok "a long run beside 'token' is masked"
 else nope "a long run beside 'token' is masked" "matched $n times"; fi
 
+# Huawei, OpenStack and Jira: the access key is 20 upper-case characters and
+# the secret 40 of base62, shapes no pattern can claim without taking every git
+# SHA with them. The name beside the value is the only signal there is.
+HSID="99999999-8888-7777-6666-555555555544"
+HT="$CLAUDE_DIR/projects/-work-repo/$HSID.jsonl"
+python3 - "$HT" <<'PY'
+import json, sys
+def turn(text):
+    return {"type": "user", "timestamp": "2026-03-02T10:00:00.000Z",
+            "cwd": "/work/repo",
+            "message": {"content": [{"type": "text", "text": text}]}}
+rows = [
+    turn("export HW_ACCESS_KEY=ABCDEFGHIJKLMNOPQRST"),
+    turn("HW_SECRET_KEY=aB3dEfGh1jKlMn0pQrStUvWxYz012345678AbCdE"),
+    turn("OS_SECRET_KEY: qWeRtYuIoP1234567890asdfghjklzxcvbnm0987"),
+    turn("HUAWEICLOUD_SDK_AK=QWERTYUIOPASDFGHJKLZ"),
+    turn("jira --token ATATT3xFfGF0abcdefghijklmnop1234567890 issue list"),
+    turn("curl -u me@corp.com:at-abcdefghijklmnopqrstuvwxyz012345 https://jira/rest"),
+    turn("merged 1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d after review"),
+]
+with open(sys.argv[1], 'w') as fh:
+    for r in rows:
+        fh.write(json.dumps(r) + "\n")
+PY
+
+out="$("$ROOT/bin/claude-sessions" --sum "$HSID" --sum-raw 2>&1)"
+absent   "Huawei access key"             "$out" "ABCDEFGHIJKLMNOPQRST"
+absent   "Huawei secret key"             "$out" "aB3dEfGh1jKlMn0pQrStUvWxYz012345678AbCdE"
+absent   "OpenStack secret key"          "$out" "qWeRtYuIoP1234567890asdfghjklzxcvbnm0987"
+absent   "Huawei SDK key named _AK"      "$out" "QWERTYUIOPASDFGHJKLZ"
+absent   "Jira token behind --token"     "$out" "ATATT3xFfGF0abcdefghijklmnop1234567890"
+absent   "Jira legacy at- token"         "$out" "at-abcdefghijklmnopqrstuvwxyz012345"
+contains "the label stays readable"      "$out" "HW_ACCESS_KEY=<REDACTED:20>"
+contains "a 40-hex SHA with no label stays" "$out" "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"
+
 # ── codex ───────────────────────────────────────────────────────────────────
 echo "codex-sessions"
 
