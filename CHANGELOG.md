@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.2
+
+**Both READMEs say why an old session is missing from the listing.** It looks
+like a bug in the tool and is not one: Claude Code prunes transcripts older
+than `cleanupPeriodDays` and takes only the `.jsonl`, so the project directory
+survives with its notes and no sessions. Codex and opencode delete nothing —
+their `[history]` and storage options are about the prompt history, not the
+rollouts — so their oldest session is just the day the IDE was first used.
+
 ## 0.5.1
 
 **Deleting a session deletes its summaries.** They outlived it: a 1.5 kB file

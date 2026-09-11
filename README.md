@@ -338,6 +338,21 @@ A session is more than its transcript: subagent logs, file history, session
 env, usage data and security state are all keyed by the same id, and `--rm`
 moves the whole footprint to the trash.
 
+### Why an old session is missing
+
+Only Claude Code deletes anything. It prunes transcripts older than
+`cleanupPeriodDays` from `settings.json` — 30 days by default — and the pruning
+takes the `.jsonl` while leaving the project directory and whatever else lives
+in it, so a directory full of notes and no sessions is the normal look of a
+session that aged out. Raising the setting does not bring back what a previous
+run already removed.
+
+Codex and opencode keep everything: no time limit, no size limit, nothing to
+configure. Codex's `[history]` settings in `config.toml` govern
+`~/.codex/history.jsonl`, the prompt history — not the rollouts. Their oldest
+session is simply the day the IDE was first used, and the only thing that
+removes one is `--rm`.
+
 **Codex** — one `rollout-*.jsonl` per session. Two layouts are in circulation:
 up to codex-cli 0.135 the turns are `event_msg/user_message`, from 0.154 they
 are `response_item/message` with a role. Both are read, and a file written
