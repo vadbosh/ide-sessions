@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.1
+
+**`--rm-all` deletes everything the filters select.** Clearing one project meant
+`--older-than 0` — "older than no days", which is true of every session and
+appears in no help text. The flag now says what it does, narrows with `-p` or a
+directory substring like the listing does, dry-runs until `--apply`, and leaves
+the live session alone.
+
 ## 0.6.0
 
 **Summarizing no longer breeds sessions.**

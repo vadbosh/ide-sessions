@@ -94,6 +94,8 @@ claude-sessions -f                  # full paths instead of the last 3 parts
 claude-sessions --rm <ID>           # confirms, then deletes
 claude-sessions --older-than 30     # dry-run until you add --apply
 claude-sessions --max-turns 2 --apply
+claude-sessions -p --rm-all --apply # everything in this project
+claude-sessions k8s --rm-all        # everything matching a directory, dry-run
 ```
 
 Deleting moves files to `~/.cache/ide-sessions-trash/<ide>-<timestamp>/`, so a

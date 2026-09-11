@@ -455,6 +455,44 @@ else
     nope "the removed summary is in the trash" "not found under $IDE_SESSIONS_TRASH"
 fi
 
+# ── --rm-all ────────────────────────────────────────────────────────────────
+# Deleting everything in one project used to mean --older-than 0, which reads
+# as "older than nothing" and appears in no help text.
+echo "--rm-all"
+
+mkdir -p "$CLAUDE_DIR/projects/-bulk" "$CLAUDE_DIR/projects/-keep"
+for i in 1 2 3; do
+    python3 - "$CLAUDE_DIR/projects/-bulk/2222222$i-2222-3333-4444-555555555555.jsonl" <<'PY2'
+import json, sys
+with open(sys.argv[1], 'w') as fh:
+    fh.write(json.dumps({"type": "user", "cwd": "/bulk",
+                         "timestamp": "2026-03-02T10:00:00.000Z",
+                         "message": {"content": [{"type": "text", "text": "x"}]}}) + "\n")
+PY2
+done
+python3 - "$CLAUDE_DIR/projects/-keep/33333333-2222-3333-4444-555555555555.jsonl" <<'PY2'
+import json, sys
+with open(sys.argv[1], 'w') as fh:
+    fh.write(json.dumps({"type": "user", "cwd": "/keep",
+                         "timestamp": "2026-03-02T10:00:00.000Z",
+                         "message": {"content": [{"type": "text", "text": "y"}]}}) + "\n")
+PY2
+
+out="$("$ROOT/bin/claude-sessions" bulk --rm-all 2>&1)"
+contains "--rm-all selects the filtered set" "$out" "3 session(s)"
+contains "--rm-all dry-runs first"           "$out" "Dry run. Nothing deleted"
+left=$(find "$CLAUDE_DIR/projects/-bulk" -name '*.jsonl' | wc -l)
+if [ "$left" = 3 ]; then ok "--rm-all without --apply deletes nothing"
+else nope "--rm-all without --apply deletes nothing" "$left left"; fi
+
+"$ROOT/bin/claude-sessions" bulk --rm-all --apply --yes >/dev/null 2>&1
+gone=$(find "$CLAUDE_DIR/projects/-bulk" -name '*.jsonl' | wc -l)
+kept=$(find "$CLAUDE_DIR/projects/-keep" -name '*.jsonl' | wc -l)
+if [ "$gone" = 0 ]; then ok "--rm-all --apply deletes the selection"
+else nope "--rm-all --apply deletes the selection" "$gone left"; fi
+if [ "$kept" = 1 ]; then ok "a project outside the filter is untouched"
+else nope "a project outside the filter is untouched" "$kept left"; fi
+
 # ── summary cache ───────────────────────────────────────────────────────────
 echo "cache"
 

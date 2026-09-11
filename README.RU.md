@@ -93,6 +93,8 @@ claude-sessions -f                  # полные пути вместо пос�
 claude-sessions --rm <ID>           # спросит подтверждение и удалит
 claude-sessions --older-than 30     # только покажет, пока нет --apply
 claude-sessions --max-turns 2 --apply
+claude-sessions -p --rm-all --apply # всё в текущем проекте
+claude-sessions k8s --rm-all        # всё по подстроке каталога, только показать
 ```
 
 Удаление переносит файлы в `~/.cache/ide-sessions-trash/<ide>-<timestamp>/`,

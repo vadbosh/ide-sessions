@@ -43,6 +43,7 @@ FILTER=""
 FULL_PATH=0
 PROJECT_SCOPE=0
 RM_IDS=""
+RM_ALL=0
 OLDER_THAN=""
 MAX_TURNS=""
 APPLY=0
@@ -61,6 +62,7 @@ Usage: claude-sessions [-n LIMIT] [-f] [-p] [substring]
        claude-sessions --sum <ID>
        claude-sessions --sum-orig <ID>
        claude-sessions --rm <ID>[,<ID>...]
+       claude-sessions -p --rm-all --apply
        claude-sessions --older-than DAYS | --max-turns N --apply
 
   -n LIMIT          limit rows
@@ -78,6 +80,7 @@ Summary of one session, grouped by topic (English unless --sum-orig):
 
 Delete selection (combine freely; substring and -p narrow it further):
   --rm IDS          comma-separated session ids; confirms, then deletes
+  --rm-all          every session the filters above select (needs --apply)
   --older-than N    sessions untouched for more than N days
   --max-turns N     sessions with N turns or fewer
   --apply           required by --older-than/--max-turns, which dry-run otherwise
@@ -96,6 +99,7 @@ while [ $# -gt 0 ]; do
     -f) FULL_PATH=1; shift ;;
     -p) PROJECT_SCOPE=1; shift ;;
     --rm) RM_IDS="$2"; shift 2 ;;
+    --rm-all) RM_ALL=1; shift ;;
     --sum) SUM_ID="$2"; shift 2 ;;
     --sum-model) SUM_MODEL="$2"; shift 2 ;;
     --sum-gap) SUM_GAP="$2"; shift 2 ;;
@@ -591,11 +595,14 @@ fi
 
 DELETE_MODE=0
 [ -n "$RM_IDS$OLDER_THAN$MAX_TURNS" ] && DELETE_MODE=1
+[ "$RM_ALL" = 1 ] && DELETE_MODE=1
 
 # An explicit id list is intent enough to delete after a prompt. Bulk criteria
 # can sweep up far more than intended, so they stay dry-run until --apply.
 BULK=0
 [ -n "$OLDER_THAN$MAX_TURNS" ] && BULK=1
+# --rm-all is the widest selection there is, so it dry-runs like the rest.
+[ "$RM_ALL" = 1 ] && BULK=1
 
 for n in "$OLDER_THAN" "$MAX_TURNS"; do
   case "$n" in
@@ -651,7 +658,7 @@ rows=$(sort -t $'\t' -k1,1nr "$tmpfile")
 
 if [ "$DELETE_MODE" = 1 ]; then
   candidates=$(printf '%s\n' "$rows" | awk -F'\t' \
-      -v ids="$RM_IDS" -v older="$OLDER_THAN" -v maxt="$MAX_TURNS" \
+      -v ids="$RM_IDS" -v older="$OLDER_THAN" -v maxt="$MAX_TURNS" -v all="$RM_ALL" \
       -v now="$now" -v cur="$CURRENT_ID" '
     BEGIN {
       n = split(ids, a, ",")
@@ -664,7 +671,7 @@ if [ "$DELETE_MODE" = 1 ]; then
     $2 == "" { next }
     {
       if ($2 == cur) next
-      if (nwant > 0 && !($2 in want)) next
+      if (all != 1 && nwant > 0 && !($2 in want)) next
       if (older != "" && (now - $1) < older * 86400) next
       if (maxt != "" && $4 + 0 > maxt + 0) next
       print
