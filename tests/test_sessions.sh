@@ -226,6 +226,35 @@ contains "lists without the sqlite3 CLI" "$out" "$OCSID"
 out="$("$ROOT/bin/opencode-sessions" --sum ses_nope --sum-raw 2>&1)"
 contains "unknown id is an error" "$out" "No session ses_nope"
 
+# --rm on a real id must actually select it. It once did not: the seed list was
+# piped to a python heredoc, which uses stdin for the program, so zero sessions
+# were selected and the delete reported success having done nothing.
+out="$("$ROOT/bin/opencode-sessions" --rm "$OCSID" --dry-run 2>&1)"
+contains "--rm selects the named session" "$out" "$OCSID"
+contains "--rm counts its rows"           "$out" "1 session(s)."
+contains "--dry-run deletes nothing"      "$out" "Nothing deleted"
+
+left=$(python3 -c "
+import sqlite3, sys
+print(sqlite3.connect(sys.argv[1]).execute('SELECT COUNT(*) FROM session').fetchone()[0])
+" "$OPENCODE_DATA_DIR/opencode.db")
+if [ "$left" = 1 ]; then ok "--dry-run left the row in place"
+else nope "--dry-run left the row in place" "sessions now: $left"; fi
+
+out="$("$ROOT/bin/opencode-sessions" --rm ses_nope --yes 2>&1)"
+contains "--rm of an absent id deletes nothing" "$out" "No sessions match"
+
+out="$("$ROOT/bin/opencode-sessions" --rm "$OCSID" --yes 2>&1)"
+contains "--rm deletes for real" "$out" "Deleted 1 session(s)"
+left=$(python3 -c "
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+print(sum(db.execute('SELECT COUNT(*) FROM ' + t).fetchone()[0]
+          for t in ('session', 'message', 'part')))
+" "$OPENCODE_DATA_DIR/opencode.db")
+if [ "$left" = 0 ]; then ok "child tables go with the session"
+else nope "child tables go with the session" "rows left: $left"; fi
+
 # ── summary cache ───────────────────────────────────────────────────────────
 echo "cache"
 

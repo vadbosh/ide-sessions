@@ -141,6 +141,19 @@ for row in con.execute(sys.argv[2]):
 PY
 }
 
+# Keep only the tables this database actually has. opencode's schema moves
+# between versions, and a table named here that is missing there would abort a
+# delete over rows that do not exist — `no such table: todo` for a session with
+# no todos.
+CHILD_TABLES=$(python3 - "$DB" "$CHILD_TABLES" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1], timeout=10)
+have = {r[0] for r in con.execute(
+    "SELECT name FROM sqlite_master WHERE type = 'table'")}
+print(' '.join(t for t in sys.argv[2].split() if t in have))
+PY
+)
+
 db_exec() {
   python3 - "$DB" "$1" <<'PY'
 import sqlite3, sys
@@ -429,10 +442,15 @@ if [ "$DELETE_MODE" = 1 ]; then
 
   # Expand to descendants. The seed ids are passed as bound parameters, so no
   # id is ever interpolated into SQL text.
-  printf '%s\n' "$seeds" | python3 - "$DB" > "$ids_file" <<'PY'
+  #
+  # They go in as an argument, not on stdin: `python3 - <<'PY'` already uses
+  # stdin for the program itself, so a piped seed list is read by nobody. That
+  # silently selected zero sessions — `--rm` of two ids that were right there in
+  # the listing reported "0 session(s)" and deleted nothing.
+  python3 - "$DB" "$seeds" > "$ids_file" <<'PY'
 import sqlite3, sys
 con = sqlite3.connect(sys.argv[1], timeout=10)
-seeds = [s.strip() for s in sys.stdin.read().splitlines() if s.strip()]
+seeds = [s.strip() for s in sys.argv[2].splitlines() if s.strip()]
 con.execute("CREATE TEMP TABLE seed(id TEXT)")
 con.executemany("INSERT INTO seed VALUES (?)", [(s,) for s in seeds])
 rows = con.execute("""
@@ -449,6 +467,16 @@ PY
 
   n_seeds=$(printf '%s\n' "$seeds" | grep -c . || true)
   n_total=$(grep -c . < "$ids_file" || true)
+
+  # Seeds that expand to nothing mean the selection and the database disagree,
+  # which is a failure, not an empty result — reporting "0 session(s)" and
+  # carrying on would look like a successful delete.
+  if [ "$n_total" = 0 ]; then
+    echo "Selected $n_seeds session(s), but none of them is in $DB." >&2
+    echo "List the ids with: opencode-sessions" >&2
+    exit 1
+  fi
+
   in_list=$(sed "s/.*/'&'/" "$ids_file" | paste -sd, -)
 
   echo "Sessions selected for deletion:"
