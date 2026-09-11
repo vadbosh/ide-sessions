@@ -121,6 +121,40 @@ The result is cached in `~/.cache/ide-sessions-summaries/`, keyed by the
 transcript's modification time. Asking twice about an unchanged session costs
 nothing; a session that has since been resumed re-summarizes itself.
 
+### Credentials
+
+A session can contain one: pasted into a prompt, echoed back in a reply,
+printed inside an error message. A summary would carry it three ways at once —
+to whatever API does the summarizing, into a cache file, and onto the terminal
+of the session that asked, which is itself being recorded. The API is worth
+naming separately: the summary need not run on the vendor the session ran on,
+so a key typed into one provider's session can reach another's.
+
+So the digest masks before anything leaves the process, and `--sum-raw` shows
+exactly what would have been sent:
+
+```
+ASKED: deploy with <REDACTED:42> please
+ASKED: export AWS_ACCESS_KEY_ID=<REDACTED:20>
+ASKED: DB_PASSWORD=<REDACTED:21> in the values file
+ASKED: psql postgres://<REDACTED:10>@db.internal:5432/app
+ASKED: api token is <REDACTED:40> and it expired
+ASKED: checked out 9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c from main
+```
+
+Two tiers, the same split `safe-env` uses. A shape that can only be a token —
+`ghp_`, `AKIA`, `glpat-`, `xox…`, `sk-`, `AIza`, a JWT, a PEM header, a
+password inside a URL — is masked anywhere it appears. A shape that merely
+could be one — 40 characters of base62, 32 of hex — is masked only on a line
+that also says token, key, secret, password, credential (in English or
+Russian). That last line above is why: without the second tier's condition,
+every git SHA in the session would come back as `<REDACTED>`.
+
+The prompt also forbids writing a credential out, cached summaries are `0600`
+and their directory `0700`. None of this recovers a key that was already in the
+transcript — rotate that one. It stops the summary from copying it somewhere
+new.
+
 ### Cost
 
 Measured, not estimated. A headless `claude -p` run inherits your `CLAUDE.md`,

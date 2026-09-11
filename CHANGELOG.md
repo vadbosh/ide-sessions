@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.4.0
+
+**Credentials in a session no longer reach the summary.**
+
+The digest copied reply text verbatim, so a key pasted into a prompt or echoed
+back in an answer would have gone to the summarizing API — possibly a different
+vendor than the session itself ran on — into a cache file, and onto the
+terminal of the session asking, which is recorded in turn.
+
+Masking now happens in the digest, before anything leaves the process, and
+`--sum-raw` shows exactly what would have been sent. Two tiers, matching
+`safe-env`: an unmistakable shape (`ghp_`, `AKIA`, `glpat-`, `xox…`, `sk-`,
+`AIza`, `ATATT`, `hf_`, `dckr_pat_`, a JWT, a PEM header, a password inside a
+URL) is masked anywhere; a merely plausible one (40 characters of base62, 32 of
+hex) only on a line that also names a credential, in English or Russian.
+Without that condition every git SHA would come back as `<REDACTED>`.
+
+The marker keeps the length of what it replaced. URLs keep their scheme and
+host, so `postgres://<REDACTED:10>@db.internal:5432/app` still says which
+database was involved.
+
+Alongside: the prompt forbids writing a credential out, summary files are
+created `0600` inside a `0700` directory. A key already in a transcript still
+has to be rotated — this stops the summary from copying it somewhere new.
+
 ## 0.3.0
 
 **`--sum-orig` — the same summary in the language the session was held in.**

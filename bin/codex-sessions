@@ -166,6 +166,76 @@ def blocks(content):
 # `response_item/message` with a role. A file written across an upgrade holds
 # both, which would double every turn — so the newer form wins when present and
 # the older is used only for files that have nothing else.
+# ── redaction ───────────────────────────────────────────────────────────────
+#
+# A session can contain a credential: pasted into a prompt, echoed back in a
+# reply, printed inside an error. The digest copies reply text, so without this
+# a key would travel three ways at once — to whatever API summarizes (not
+# necessarily the vendor the session itself ran on), into a cache file on disk,
+# and onto the terminal of the session asking for the summary, which is itself
+# being recorded.
+#
+# So masking happens here, before anything leaves the process, and --sum-raw
+# shows exactly what would have been sent. The tiers match `safe-env`: a shape
+# that can only be a token is masked anywhere, while a shape that merely could
+# be one — 40 characters of base62, 32 of hex — is masked only where a
+# credential word stands beside it. Otherwise every git SHA in the session
+# would come back as <REDACTED>.
+PROVIDER = re.compile(
+    r'AKIA[0-9A-Z]{16}'
+    r'|(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9]{36,}'
+    r'|github_pat_[A-Za-z0-9_]{22,}'
+    r'|glpat-[A-Za-z0-9_-]{20,}'
+    r'|xox[baprs]-[A-Za-z0-9-]{10,}'
+    r'|tvly-[A-Za-z0-9-]{10,}'
+    r'|AIza[A-Za-z0-9_-]{35}'
+    r'|(?:sk|rk)_live_[A-Za-z0-9]{20,}'
+    r'|sk-(?:or-v1-|proj-|ant-)?[A-Za-z0-9-]{20,}'
+    r'|ATATT[A-Za-z0-9_=.-]{20,}'
+    r'|hf_[A-Za-z0-9]{30,}'
+    r'|dckr_pat_[A-Za-z0-9_-]{20,}'
+    r'|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*'
+    r'|-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----')
+
+# Credentials inside a URL. Separate from the list above so the scheme and host
+# survive: postgres://admin:pw@db/app is worth reading as "postgres, db, app".
+URL_CRED = re.compile(r'://[^/:@\s]+:([^/:@\s]{3,})@')
+
+# NAME=value and NAME: value, where the name is the only thing saying "secret".
+NAMED = re.compile(
+    r'((?:PASS|PASSWD|PASSWORD|PASSPHRASE|TOKEN|SECRET|API_?KEY|APIKEY'
+    r'|AUTH_?TOKEN|ACCESS_?KEY|SECRET_?KEY|CLIENT_?SECRET|PRIVATE_?KEY'
+    r'|CREDENTIAL)[A-Z0-9_]*)(\s*[=:]\s*)([\'"]?)([^\s\'"]{8,})',
+    re.I)
+
+# A line that talks about credentials at all. Only there is a long anonymous
+# run treated as a secret.
+CRED_WORD = re.compile(
+    r'token|secret|password|passwd|credential|api[ _-]?key|access[ _-]?key'
+    r'|токен|пароль|секрет|ключ', re.I)
+HIGH_ENTROPY = re.compile(r'\b[A-Za-z0-9_-]{40,}\b|\b[A-Fa-f0-9]{32,}\b')
+
+def mask(m):
+    return '<REDACTED:%d>' % len(m.group(0))
+
+def redact(text):
+    out = []
+    for line in (text or '').splitlines():
+        line = PROVIDER.sub(mask, line)
+        line = URL_CRED.sub(
+            lambda m: '://<REDACTED:%d>@' % len(m.group(1)), line)
+        # A value already masked is left alone: masking the marker again would
+        # overwrite the real length with the marker's own.
+        line = NAMED.sub(
+            lambda m: m.group(0) if m.group(4).startswith('<REDACTED:')
+            else '%s%s%s<REDACTED:%d>' % (m.group(1), m.group(2),
+                                          m.group(3), len(m.group(4))),
+            line)
+        if CRED_WORD.search(line):
+            line = HIGH_ENTROPY.sub(mask, line)
+        out.append(line)
+    return '\n'.join(out)
+
 items, events, tools_seen, cwd = [], [], [], ''
 with open(path, errors='replace') as fh:
     for line in fh:
@@ -186,12 +256,12 @@ with open(path, errors='replace') as fh:
             # multi-agent rules. None of it is session content.
             if role not in ('user', 'assistant'):
                 continue
-            txt = clean(blocks(p.get('content')))
+            txt = redact(clean(blocks(p.get('content'))))
             if txt:
                 items.append({'ep': ep, 'role': role, 'txt': txt,
                               'tools': [], 'cwd': cwd})
         elif kind == 'event_msg' and sub in ('user_message', 'agent_message'):
-            txt = clean(p.get('message'))
+            txt = redact(clean(p.get('message')))
             if txt:
                 events.append({'ep': ep,
                                'role': 'user' if sub == 'user_message' else 'assistant',
@@ -286,6 +356,9 @@ Rules:
 $SUM_LANG_RULE
 - Keep verbatim, untranslated: code, file paths, commands, flags, identifiers,
   branch names, error strings.
+- Never write out a key, token, password or other credential, even if one
+  appears in the digest. Anything already masked as <REDACTED:N> stays masked;
+  say what it was for, not what it was.
 - One '### ' heading per distinct topic, 4-8 words, naming the actual subject.
 - Under each heading, 2-4 bullets. A bullet is <= 14 words, past tense, and names
   something concrete: a file, a command, a tool, a decision, a number.
@@ -358,7 +431,13 @@ if [ -n "$SUM_ID" ]; then
     exit 1
   fi
 
+  # A summary can still name what a secret was for, and it is written without
+  # being read again. Keep it to this user: 0700 on the directory, 0600 on the
+  # file, set before the content goes in.
   mkdir -p "$SUM_CACHE"
+  chmod 700 "$SUM_CACHE" 2>/dev/null || true
+  : > "$cache_file"
+  chmod 600 "$cache_file" 2>/dev/null || true
   { printf '<!-- %s -->\n' "$key"; printf '%s\n' "$summary"; } > "$cache_file"
   # Which model wrote this goes to stderr, so `--sum | …` stays pure summary.
   echo "summarized with ${model:-the configured Codex model}" >&2

@@ -90,6 +90,55 @@ absent "a wide gap keeps one part" "$out" "## part 2"
 out="$("$ROOT/bin/claude-sessions" --sum no-such-session --sum-raw 2>&1)"
 contains "unknown id is an error" "$out" "No transcript for session"
 
+# ── redaction ───────────────────────────────────────────────────────────────
+# All values below are invented and match no real account. They are here
+# because a secret in a session must not reach the model, the cache file or the
+# terminal, and the digest is the only place that can stop it.
+echo "redaction"
+
+RSID="99999999-8888-7777-6666-555555555555"
+RT="$CLAUDE_DIR/projects/-work-repo/$RSID.jsonl"
+python3 - "$RT" <<'PY'
+import json, sys
+def turn(text, ts="2026-03-02T10:00:00.000Z"):
+    return {"type": "user", "timestamp": ts, "cwd": "/work/repo",
+            "message": {"content": [{"type": "text", "text": text}]}}
+rows = [
+    turn("deploy with ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA please"),
+    turn("export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE"),
+    turn("DB_PASSWORD=hunter2-correct-horse in the values file"),
+    turn("psql postgres://admin:s3cr3tpass@db.internal:5432/app"),
+    turn("api token is 9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c and it expired"),
+    turn("checked out 9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c from main"),
+    turn("read /etc/passwd and config.yaml"),
+]
+with open(sys.argv[1], 'w') as fh:
+    for r in rows:
+        fh.write(json.dumps(r) + "\n")
+PY
+
+out="$("$ROOT/bin/claude-sessions" --sum "$RSID" --sum-raw 2>&1)"
+absent   "GitHub token is masked"        "$out" "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+absent   "AWS key id is masked"          "$out" "AKIAIOSFODNN7EXAMPLE"
+absent   "password by variable name"     "$out" "hunter2-correct-horse"
+absent   "password inside a URL"         "$out" "s3cr3tpass"
+contains "the URL keeps scheme and host" "$out" "db.internal:5432/app"
+contains "masking leaves a marker"       "$out" "<REDACTED:"
+contains "the surrounding text survives" "$out" "in the values file"
+
+# The marker carries the length of what was hidden, so a re-masked marker would
+# report its own length instead of the secret's.
+contains "the marker keeps the real length" "$out" "AWS_ACCESS_KEY_ID=<REDACTED:20>"
+
+# The generic rules must not eat ordinary text: a git SHA is the same shape as
+# an unprefixed token, and masking every one of them would make summaries
+# useless.
+contains "a SHA without credential words stays" "$out" "checked out 9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c"
+contains "a path is not a secret"               "$out" "/etc/passwd"
+n=$(printf '%s\n' "$out" | rg -c 'api token is <REDACTED:' || true)
+if [ "$n" = 1 ]; then ok "a long run beside 'token' is masked"
+else nope "a long run beside 'token' is masked" "matched $n times"; fi
+
 # ── codex ───────────────────────────────────────────────────────────────────
 echo "codex-sessions"
 
