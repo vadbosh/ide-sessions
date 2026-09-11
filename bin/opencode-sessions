@@ -45,6 +45,7 @@ SUM_MODEL="${IDE_SESSIONS_SUM_MODEL:-}"
 SUM_GAP=45
 SUM_REFRESH=0
 SUM_RAW=0
+SUM_LANG=en
 
 # Every table keyed by session_id; `session` itself is keyed by id.
 CHILD_TABLES="part message todo session_share session_message session_context_epoch session_input"
@@ -61,12 +62,13 @@ Usage: opencode-sessions [-n LIMIT] [-f] [-p] [substring]
   -p                only sessions whose directory == $PWD exactly
   substring         filter by dir substring
 
-Summary of one session (English, grouped by topic):
+Summary of one session, grouped by topic (English unless --sum-orig):
   --sum ID          summarize that session; the result is cached per session
   --sum-model M     model to summarize with (default: the one opencode uses)
   --sum-gap MIN     minutes of silence that start a new topic (default: 45)
   --sum-refresh     ignore the cached summary and ask the model again
   --sum-raw         print the extracted digest only — no model call, no cost
+  --sum-orig        summarize in the session's own language, not English
 
 Delete selection (combine freely; substring and -p narrow it further):
   --rm IDS          comma-separated session ids; confirms, then deletes
@@ -92,6 +94,7 @@ while [ $# -gt 0 ]; do
     --sum-gap) SUM_GAP="$2"; shift 2 ;;
     --sum-refresh) SUM_REFRESH=1; shift ;;
     --sum-raw) SUM_RAW=1; shift ;;
+    --sum-orig) SUM_LANG=orig; shift ;;
     --older-than) OLDER_THAN="$2"; shift 2 ;;
     --max-turns) MAX_TURNS="$2"; shift 2 ;;
     --trash) TRASH_ROOT="$2"; shift 2 ;;
@@ -180,6 +183,12 @@ shorten_dir() {
   echo "$p" | awk -F/ '{ n=NF; if (n<=3) print $0; else print $(n-2)"/"$(n-1)"/"$n }'
 }
 
+# --sum and --sum-orig answer the same question in two languages, so they cache
+# side by side; one file would mean each flag silently discarding the other's
+# work.
+SUM_FILE_SUFFIX=""
+[ "$SUM_LANG" = orig ] && SUM_FILE_SUFFIX=".orig"
+
 # ── summary of one session ──────────────────────────────────────────────────
 #
 # A session is thousands of rows in `part`; what a person wants back a week
@@ -188,9 +197,10 @@ shorten_dir() {
 # one model call over what is left. Only the first pass knows opencode's schema
 # — everything after it is the same in all three scripts.
 #
-# The summary is written in English whatever language the session was held in,
-# because that is the language the digest is asked for; a purely local
-# extraction could not do that, which is why a model is called at all.
+# The summary comes back in English whatever language the session was held in,
+# because that is what the prompt asks for; a purely local extraction could not
+# translate, which is why a model is called at all. --sum-orig asks for the
+# session's own language instead — same digest, one rule swapped.
 
 # The digest. Reads the session's messages, prints a compact per-topic block.
 # Topics are cut where the work actually stopped: a silence longer than
@@ -285,26 +295,37 @@ print('\n'.join(out))
 PY
 }
 
+# The language rule is the whole difference between --sum and --sum-orig, so it
+# is one variable inside one prompt. Two separate prompts would drift apart at
+# the first edit to everything they have in common.
+if [ "$SUM_LANG" = orig ]; then
+  SUM_LANG_RULE='- Write in the language the session itself was held in. Where more than one was
+  used, take the language the user typed most, and use only that one — do not
+  mix two languages in a summary and do not translate into English.'
+else
+  SUM_LANG_RULE='- Write in English only. One session can mix languages — Russian, German, any
+  other, sometimes inside a single sentence. Translate all of it; never leave a
+  phrase in the original language and never answer in it.'
+fi
+
 # What the model is asked for. Kept next to the digest so the two are read
 # together: the digest decides what the model can see, this decides what it
 # does with it.
-SUM_PROMPT='Below is a machine-made digest of one AI coding session: the user'"'"'s asks, short excerpts of the replies, and tool counts, already split into parts.
+SUM_PROMPT="Below is a machine-made digest of one AI coding session: the user's asks, short excerpts of the replies, and tool counts, already split into parts.
 
 Write a summary of what was DONE in that session.
 
 Rules:
-- Write in English only. One session can mix languages — Russian, German, any
-  other, sometimes inside a single sentence. Translate all of it; never leave a
-  phrase in the original language and never answer in it.
+$SUM_LANG_RULE
 - Keep verbatim, untranslated: code, file paths, commands, flags, identifiers,
   branch names, error strings.
-- One "### " heading per distinct topic, 4-8 words, naming the actual subject.
+- One '### ' heading per distinct topic, 4-8 words, naming the actual subject.
 - Under each heading, 2-4 bullets. A bullet is <= 14 words, past tense, and names
   something concrete: a file, a command, a tool, a decision, a number.
 - Merge parts that are the same topic. At most 5 headings for the whole session.
 - Say what was decided or found, not what was discussed.
 - No preamble, no closing remarks, no restating these rules.
-- Do not read any file and do not run any command: the digest is all there is.'
+- Do not read any file and do not run any command: the digest is all there is."
 
 if [ -n "$SUM_ID" ]; then
   digest=$(sum_digest "$SUM_ID") || {
@@ -326,8 +347,8 @@ if [ -n "$SUM_ID" ]; then
   # --sum-model is the only way a model name enters this script.
   model="${SUM_MODEL:-}"
   src_mtime=$(db_tsv "SELECT time_updated FROM session WHERE id = '$SUM_ID';")
-  key="ide-sessions-sum v1 src=${src_mtime:-0} model=${model:-default} gap=$SUM_GAP"
-  cache_file="$SUM_CACHE/opencode-$SUM_ID.md"
+  key="ide-sessions-sum v1 src=${src_mtime:-0} model=${model:-default} gap=$SUM_GAP lang=$SUM_LANG"
+  cache_file="$SUM_CACHE/opencode-$SUM_ID$SUM_FILE_SUFFIX.md"
 
   # The cache is keyed by the session's own time_updated, so a session that has
   # since been continued re-summarizes itself and one that has not costs

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0
+
+**`--sum-orig` — the same summary in the language the session was held in.**
+
+`--sum` exists so a colleague can read a session they did not run, which is why
+it always answers in English. Reading back your own session is the other half
+of the same need, and there the translation is a loss: the words you typed come
+back as someone else's. `--sum-orig` takes the language the user typed most and
+writes in that one.
+
+- The two are cached side by side (`<id>.md` and `<id>.orig.md`), so a session
+  can hold an English summary and a native one at once.
+- One prompt with one variable rule, not two prompts — everything else about
+  what a summary should contain stays in a single place.
+
 ## 0.2.0
 
 **`--sum ID` — an English summary of one session, grouped by topic.**

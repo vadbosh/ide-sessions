@@ -261,7 +261,7 @@ echo "cache"
 export IDE_SESSIONS_SUM_CACHE="$TMP/cache"
 mkdir -p "$IDE_SESSIONS_SUM_CACHE"
 src_mtime=$(stat -c %Y "$T" 2>/dev/null || stat -f %m "$T")
-key="ide-sessions-sum v1 src=$src_mtime model=pinned gap=45"
+key="ide-sessions-sum v1 src=$src_mtime model=pinned gap=45 lang=en"
 { printf '<!-- %s -->\n' "$key"; printf '### cached heading\n'; } \
     > "$IDE_SESSIONS_SUM_CACHE/claude-$SID.md"
 
@@ -283,6 +283,24 @@ touch "$T"
 out="$("$ROOT/bin/claude-sessions" --sum "$SID" --sum-model pinned 2>&1)"
 absent   "a newer transcript invalidates the cache" "$out" "### cached heading"
 contains "a failed model call is reported"          "$out" "returned nothing"
+
+# --sum and --sum-orig must not share a cache entry: one file would mean asking
+# for the other language silently returns the one already stored.
+src_mtime=$(stat -c %Y "$T" 2>/dev/null || stat -f %m "$T")
+for lang in en orig; do
+    key="ide-sessions-sum v1 src=$src_mtime model=pinned gap=45 lang=$lang"
+    suffix=""
+    [ "$lang" = orig ] && suffix=".orig"
+    { printf '<!-- %s -->\n' "$key"; printf '### %s heading\n' "$lang"; } \
+        > "$IDE_SESSIONS_SUM_CACHE/claude-$SID$suffix.md"
+done
+
+out="$("$ROOT/bin/claude-sessions" --sum "$SID" --sum-model pinned 2>&1)"
+contains "--sum reads the English entry" "$out" "### en heading"
+
+out="$("$ROOT/bin/claude-sessions" --sum "$SID" --sum-orig --sum-model pinned 2>&1)"
+contains "--sum-orig reads its own entry"    "$out" "### orig heading"
+absent   "--sum-orig does not read English"  "$out" "### en heading"
 
 # ── report ──────────────────────────────────────────────────────────────────
 echo
