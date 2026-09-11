@@ -339,6 +339,38 @@ print(sum(db.execute('SELECT COUNT(*) FROM ' + t).fetchone()[0]
 if [ "$left" = 0 ]; then ok "child tables go with the session"
 else nope "child tables go with the session" "rows left: $left"; fi
 
+# ── deleting takes the cached summary with it ───────────────────────────────
+echo "delete clears the cache"
+
+export IDE_SESSIONS_SUM_CACHE="$TMP/cache"
+export IDE_SESSIONS_TRASH="$TMP/trash"
+mkdir -p "$IDE_SESSIONS_SUM_CACHE"
+
+for suffix in "" ".orig"; do
+    printf '<!-- stale -->\n### old summary\n' \
+        > "$IDE_SESSIONS_SUM_CACHE/claude-$RSID$suffix.md"
+done
+"$ROOT/bin/claude-sessions" --rm "$RSID" --yes >/dev/null 2>&1
+left=$(ls "$IDE_SESSIONS_SUM_CACHE" | grep -c "$RSID" || true)
+if [ "$left" = 0 ]; then ok "claude: --rm removes the cached summaries"
+else nope "claude: --rm removes the cached summaries" "$left file(s) left"; fi
+
+for suffix in "" ".orig"; do
+    printf '<!-- stale -->\n### old summary\n' \
+        > "$IDE_SESSIONS_SUM_CACHE/codex-$CSID$suffix.md"
+done
+"$ROOT/bin/codex-sessions" --rm "$CSID" --yes >/dev/null 2>&1
+left=$(ls "$IDE_SESSIONS_SUM_CACHE" | grep -c "$CSID" || true)
+if [ "$left" = 0 ]; then ok "codex: --rm removes the cached summaries"
+else nope "codex: --rm removes the cached summaries" "$left file(s) left"; fi
+
+# A removed summary must be recoverable like everything else --rm touches.
+if find "$IDE_SESSIONS_TRASH" -name "codex-$CSID.md" | grep -q .; then
+    ok "the removed summary is in the trash"
+else
+    nope "the removed summary is in the trash" "not found under $IDE_SESSIONS_TRASH"
+fi
+
 # ── summary cache ───────────────────────────────────────────────────────────
 echo "cache"
 

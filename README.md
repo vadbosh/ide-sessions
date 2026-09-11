@@ -194,6 +194,13 @@ directory; deleting one costs a re-run and nothing else. The key is checked
 before the transcript is parsed, so a hit does no work at all, and a session
 resumed since then re-summarizes itself because its mtime moved.
 
+Nothing is ever appended. A re-run replaces that one file wholesale, because
+the new summary is made from the whole transcript, not from the part added
+since — a summary of the last hour with the first hour missing would be worse
+than none. Deleting a file, or the whole directory, costs exactly one re-run;
+there is no other state. `--rm` removes a session's summaries along with the
+session, into the same recoverable trash directory.
+
 The only SQLite involved anywhere is opencode's own session store, which
 `opencode-sessions` reads to list and to delete. No summary is ever written to
 it.

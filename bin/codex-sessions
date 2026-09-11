@@ -624,7 +624,10 @@ if [ "$DELETE_MODE" = 1 ]; then
     date_str=$(date -d "@$mtime" +"%m-%d %H:%M" 2>/dev/null || date -r "$mtime" +"%m-%d %H:%M")
     printf "%-38s %-10s %-6s %-11s %s\n" \
       "$sid" "$(format_age "$mtime")" "$turns" "$date_str" "$(shorten_dir "$cwd")"
-    if [ -e "$fpath" ]; then printf '%s\n' "$fpath" >> "$paths_file"; fi
+    # A cached summary outlives the session it describes unless it goes too.
+    for path in "$fpath" "$SUM_CACHE/codex-$sid.md" "$SUM_CACHE/codex-$sid.orig.md"; do
+      if [ -e "$path" ]; then printf '%s\n' "$path" >> "$paths_file"; fi
+    done
   done <<< "$candidates"
 
   npaths=$(wc -l < "$paths_file" | tr -d ' ')

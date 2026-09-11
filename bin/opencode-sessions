@@ -743,6 +743,17 @@ PY
 
   cp "$ids_file" "$trash/.session-ids"
 
+  # Cached summaries are files, not rows: the dump above cannot carry them, so
+  # they move into the same trash directory and restore with a plain copy.
+  while IFS= read -r sid; do
+    [ -n "$sid" ] || continue
+    for path in "$SUM_CACHE/opencode-$sid.md" "$SUM_CACHE/opencode-$sid.orig.md"; do
+      [ -e "$path" ] || continue
+      mkdir -p "$trash/${path%/*}"
+      mv "$path" "$trash/${path#/}" 2>/dev/null || true
+    done
+  done < "$ids_file"
+
   db_exec "
 BEGIN IMMEDIATE;
 $(for t in $CHILD_TABLES; do echo "DELETE FROM $t WHERE session_id IN ($in_list);"; done)

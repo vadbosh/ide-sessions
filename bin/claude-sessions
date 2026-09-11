@@ -616,7 +616,9 @@ footprint_of() {
     "$CONFIG_DIR/usage-data/facets/$sid.json" \
     "$CONFIG_DIR/usage-data/session-meta/$sid.json" \
     "$CONFIG_DIR/security/security_warnings_state_$sid.json" \
-    "$CONFIG_DIR/security/security_warnings_state_$sid.lock"
+    "$CONFIG_DIR/security/security_warnings_state_$sid.lock" \
+    "$SUM_CACHE/claude-$sid.md" \
+    "$SUM_CACHE/claude-$sid.orig.md"
 }
 
 if [ "$DELETE_MODE" = 1 ]; then

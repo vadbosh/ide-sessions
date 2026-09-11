@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.1
+
+**Deleting a session deletes its summaries.** They outlived it: a 1.5 kB file
+named after an id that no longer resolves to anything. For Claude Code and
+Codex they join the footprint that already moves to the trash; for opencode,
+where the session itself is rows in a database, the two files are moved into
+the same trash directory beside the row dump. Restoring is the same `cp -a` it
+was before.
+
 ## 0.5.0
 
 **A summary of a long session no longer looks like a hang.**
