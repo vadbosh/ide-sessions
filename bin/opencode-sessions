@@ -85,18 +85,20 @@ Delete selection (combine freely; substring and -p narrow it further):
   --dry-run         report only, never delete
   --trash DIR       trash location (default: $HOME/.cache/ide-sessions-trash)
 
-What deletes what — the scope comes from the same flags as the listing:
+What deletes what. The scope comes from the same flags as the listing, and
+nothing goes until --apply — without it you get the list and a dry-run note.
 
-  opencode-sessions -p                     list sessions whose directory is $PWD
-  opencode-sessions -p --rm-all            …select all of them, print, delete nothing
-  opencode-sessions -p --rm-all --apply    …and delete them
+  opencode-sessions -p                          lists sessions whose directory is $PWD
+  opencode-sessions -p --rm-all                 lists what --apply would delete, deletes nothing
 
-  opencode-sessions k8s --rm-all --apply   every session whose dir matches "k8s"
-  opencode-sessions --rm-all               refused: nothing narrows it
-  opencode-sessions --rm-all --everywhere  every project on this machine, printed first
+  opencode-sessions -p --rm-all --apply         DELETES every session of this project
+  opencode-sessions k8s --rm-all --apply        DELETES every session whose dir matches "k8s"
+  opencode-sessions -p --older-than 30 --apply  DELETES this project's sessions untouched for 30+ days
+  opencode-sessions -p --max-turns 20 --apply   DELETES this project's sessions of 20 turns or fewer
+  opencode-sessions --max-turns 2 --apply       DELETES sessions of 2 turns or fewer, in every project
 
-  opencode-sessions -p --older-than 30 --apply     this project, older than 30 days
-  opencode-sessions --max-turns 2 --apply          trivial sessions, everywhere
+  opencode-sessions --rm-all                    refused: nothing narrows it
+  opencode-sessions --rm-all --everywhere       lists every project; add --apply to DELETE all of it
 
 Child (subagent) sessions of anything selected are deleted with their parent.
 EOF

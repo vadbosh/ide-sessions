@@ -467,6 +467,19 @@ for cmd in claude-sessions codex-sessions opencode-sessions; do
     contains "$cmd --help shows the scoped form" "$out" "$cmd -p --rm-all --apply"
     contains "$cmd --help shows the refusal"     "$out" "refused: nothing narrows it"
     contains "$cmd --help shows --everywhere"    "$out" "--rm-all --everywhere"
+    # Every line that deletes has to say so. An example that only names the
+    # selection — "this project, older than 30 days" — is how someone runs a
+    # delete believing it is a filter.
+    for form in "--rm-all --apply" "--older-than 30 --apply" "--max-turns 20 --apply"; do
+        # The usage header at the top names the same forms without explaining
+        # them, so the test asks whether ANY line carrying this form says
+        # DELETES — that line is the one in the examples.
+        if printf '%s\n' "$out" | grep -F -- "$form" | grep -q DELETES; then
+            ok "$cmd --help: '$form' says DELETES"
+        else
+            nope "$cmd --help: '$form' says DELETES" "no line pairs it with the verb"
+        fi
+    done
 done
 
 

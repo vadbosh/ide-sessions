@@ -91,12 +91,17 @@ claude-sessions k8s                 # filter by directory substring
 claude-sessions -p                  # only this project's sessions
 claude-sessions -f                  # full paths instead of the last 3 parts
 
-claude-sessions --rm <ID>           # confirms, then deletes
-claude-sessions --older-than 30     # dry-run until you add --apply
-claude-sessions --max-turns 2 --apply
-claude-sessions -p --rm-all --apply # everything in this project
-claude-sessions k8s --rm-all        # everything matching a directory, dry-run
+claude-sessions --rm <ID>                    # confirms, then deletes
+claude-sessions --older-than 30              # lists; deletes nothing yet
+claude-sessions --older-than 30 --apply      # DELETES everything untouched for 30+ days
+claude-sessions -p --max-turns 20 --apply    # DELETES this project's short sessions
+claude-sessions -p --rm-all --apply          # DELETES every session of this project
+claude-sessions k8s --rm-all                 # lists what that would take, in every dir matching k8s
 ```
+
+Every bulk form lists first and deletes only with `--apply`. The examples in
+`--help` spell out which is which, because "older than 30 days" describes a
+selection and says nothing about what happens to it.
 
 `--rm-all` refuses to run with nothing narrowing it. On its own it would mean
 every session of every project, and that is the form a person types first —

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.4
+
+**Every example that deletes now says DELETES.** The help listed
+`--older-than 30 --apply` against the words "this project, older than 30 days"
+— a description of the selection, with no verb anywhere near it. Read quickly,
+it looks like a filter. Each line in the examples block now leads with what
+happens: lists, or DELETES, and the tests fail if a form carrying `--apply`
+appears without the verb.
+
 ## 0.6.3
 
 **`--help` ends with the combinations.** A flag list answers what `--rm-all`
