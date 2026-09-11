@@ -156,9 +156,47 @@ Each command calls **its own IDE's CLI** — `claude -p`, `codex exec`,
 binding one tool's feature to another tool's binary would make it unavailable
 exactly where it is needed.
 
-The result is cached in `~/.cache/ide-sessions-summaries/`, keyed by the
-transcript's modification time. Asking twice about an unchanged session costs
-nothing; a session that has since been resumed re-summarizes itself.
+### How long it takes, and what is stored
+
+The model call is the whole wait. Measured on a 9 MB, 4577-line transcript:
+
+| Step | Time |
+|---|---|
+| Local digest (`--sum-raw`) | 0.6 s |
+| Model call, 15 kB digest, 10 parts merged into 5 topics | 79 s |
+| Second run, from cache | 0.3 s |
+
+So a minute or more on a long session is normal, and it is neither the parsing
+nor the writing — it is one model generating a summary of ten separate stretches
+of work. `--sum-raw` tells the two apart: if that returns instantly and `--sum`
+does not, the time is being spent at the API.
+
+While the call is out, a counter says so — on stderr, and only when stderr is a
+terminal, so a pipe or a script sees nothing of it:
+
+```
+  summarizing 10 part(s) with claude-haiku-4-5-20251001… 37s
+```
+
+**The cache is plain files, not a database.** One Markdown file per session and
+language in `~/.cache/ide-sessions-summaries/`:
+
+```
+claude-<ID>.md          English summary
+claude-<ID>.orig.md     the --sum-orig one
+codex-<ID>.md
+opencode-<ses_…>.md
+```
+
+The first line is a comment holding the key — transcript mtime, model, gap,
+language — and the rest is the summary as printed. Files are `0600` in a `0700`
+directory; deleting one costs a re-run and nothing else. The key is checked
+before the transcript is parsed, so a hit does no work at all, and a session
+resumed since then re-summarizes itself because its mtime moved.
+
+The only SQLite involved anywhere is opencode's own session store, which
+`opencode-sessions` reads to list and to delete. No summary is ever written to
+it.
 
 ### Credentials
 

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.0
+
+**A summary of a long session no longer looks like a hang.**
+
+Measured on a 9 MB, 4577-line transcript: the local digest takes 0.6 s and the
+model call 79 s, because one model is writing a summary of ten separate
+stretches of work. Nothing said so, and a terminal silent for over a minute
+reads as a stuck command. There is now a counter on stderr — `summarizing 10
+part(s) with claude-haiku-4-5-20251001… 37s` — printed only when stderr is a
+terminal, so a pipe or a script still sees the summary alone.
+
+**A cache hit does no work.** The transcript was parsed first and the cache
+consulted afterwards, so a hit paid the full 0.6 s of parsing to throw the
+result away. The key needs only the mtime and the model, so it is checked
+first: 1.1 s to 0.3 s on that same session.
+
+**Both READMEs say where summaries live**, since "cached" was doing a lot of
+unexplained work: one Markdown file per session and language under
+`~/.cache/ide-sessions-summaries/`, `0600` in a `0700` directory, the key on
+the first line. The only SQLite anywhere is opencode's own session store, which
+is read, never written with a summary.
+
 ## 0.4.2
 
 **`--sum-orig <ID>` needs no second flag.**

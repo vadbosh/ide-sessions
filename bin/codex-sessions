@@ -395,6 +395,41 @@ $SUM_LANG_RULE
 - No preamble, no closing remarks, no restating these rules.
 - Do not read any file and do not run any command: the digest is all there is."
 
+# A summary of a long session is one model call and takes as long as it takes —
+# 79 seconds for a ten-part digest, measured. A terminal with nothing on it for
+# that long reads as a hang, so say what is happening and count the seconds.
+#
+# Only when stderr is a terminal: in a pipe or a script the carriage returns
+# would end up in a file, and the summary on stdout has to stay clean either
+# way.
+SUM_PROGRESS_PID=""
+sum_progress_start() {
+  [ -t 2 ] || return 0
+  local msg="$1"
+  (
+    i=0
+    while :; do
+      printf '\r  %s… %ds' "$msg" "$i" >&2
+      i=$((i + 1))
+      sleep 1
+    done
+  ) &
+  SUM_PROGRESS_PID=$!
+}
+
+sum_progress_stop() {
+  [ -n "$SUM_PROGRESS_PID" ] || return 0
+  kill "$SUM_PROGRESS_PID" 2>/dev/null || true
+  wait "$SUM_PROGRESS_PID" 2>/dev/null || true
+  SUM_PROGRESS_PID=""
+  # \033[K clears what the counter left on the line; without it the next
+  # output lands on top of half a progress line.
+  printf '\r\033[K' >&2
+}
+
+# An interrupted run must not leave the counter running in the background.
+trap 'sum_progress_stop' EXIT INT TERM
+
 if [ -n "$SUM_ID" ]; then
   rollout=$(find "$SESSIONS_DIR" -name "rollout-*$SUM_ID.jsonl" -print -quit 2>/dev/null || true)
   if [ -z "$rollout" ]; then
@@ -403,13 +438,11 @@ if [ -n "$SUM_ID" ]; then
     exit 1
   fi
 
-  digest=$(sum_digest "$rollout") || {
-    echo "Nothing to summarize: $SUM_ID has no user or agent messages." >&2
-    exit 1
-  }
-
   if [ "$SUM_RAW" = 1 ]; then
-    printf '%s\n' "$digest"
+    sum_digest "$rollout" || {
+      echo "Nothing to summarize: $SUM_ID has no user or agent messages." >&2
+      exit 1
+    }
     exit 0
   fi
 
@@ -424,11 +457,19 @@ if [ -n "$SUM_ID" ]; then
 
   # The cache is keyed by the rollout's mtime, so a session that has since been
   # resumed re-summarizes itself and one that has not costs nothing twice.
+  # Checked before the digest is built, not after: parsing a large transcript
+  # takes about 0.6 s, and doing it to then throw the result away was most of
+  # what a cache hit cost.
   if [ "$SUM_REFRESH" != 1 ] && [ -f "$cache_file" ] &&
      [ "$(head -1 "$cache_file")" = "<!-- $key -->" ]; then
     tail -n +2 "$cache_file"
     exit 0
   fi
+
+  digest=$(sum_digest "$rollout") || {
+    echo "Nothing to summarize: $SUM_ID has no user or agent messages." >&2
+    exit 1
+  }
 
   command -v codex >/dev/null 2>&1 || {
     echo "codex CLI not found — needed to write the summary." >&2
@@ -451,7 +492,10 @@ if [ -n "$SUM_ID" ]; then
       -c features.hooks=false
   [ -n "$model" ] && set -- "$@" -m "$model"
 
+  sum_progress_start "summarizing $(printf '%s\n' "$digest" | grep -c '^## part') part(s) with ${model:-the configured Codex model}"
+
   printf '%s\n\n%s\n' "$SUM_PROMPT" "$digest" | codex "$@" - >/dev/null 2>&1 || true
+  sum_progress_stop
   summary=$(cat "$last_msg" 2>/dev/null || true)
 
   if [ -z "$summary" ]; then
