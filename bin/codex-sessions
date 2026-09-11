@@ -492,11 +492,35 @@ if [ -n "$SUM_ID" ]; then
       -c features.hooks=false
   [ -n "$model" ] && set -- "$@" -m "$model"
 
+  # Summarizing writes a rollout of its own — `codex exec` is a session like any
+  # other, and left alone every --sum added a row to the very listing this
+  # script exists to keep readable.
+  #
+  # Codex picks the id itself, so the scratch rollout is identified by not
+  # having existed before the call. Not by mtime: a Codex running in another
+  # terminal appends to its rollout continuously, and "newer than a mark" would
+  # match that live session and delete it.
+  before=$(mktemp)
+  trap 'sum_progress_stop; rm -f "$last_msg" "$before"' EXIT INT TERM
+  find "$SESSIONS_DIR" -name 'rollout-*.jsonl' 2>/dev/null | sort > "$before"
+
   sum_progress_start "summarizing $(printf '%s\n' "$digest" | grep -c '^## part') part(s) with ${model:-the configured Codex model}"
 
   printf '%s\n\n%s\n' "$SUM_PROMPT" "$digest" | codex "$@" - >/dev/null 2>&1 || true
   sum_progress_stop
   summary=$(cat "$last_msg" 2>/dev/null || true)
+
+  # A file that appeared during the call, and whose text carries the prompt this
+  # script sends. Both tests, because a session started by hand in the same
+  # seconds is also new — and it is not ours to delete.
+  find "$SESSIONS_DIR" -name 'rollout-*.jsonl' 2>/dev/null | sort |
+  comm -13 "$before" - |
+  while IFS= read -r fresh; do
+    [ -n "$fresh" ] || continue
+    if grep -q 'machine-made digest of one AI coding session' "$fresh" 2>/dev/null; then
+      rm -f "$fresh"
+    fi
+  done
 
   if [ -z "$summary" ]; then
     echo "The model returned nothing. Re-run with --sum-raw to see the digest." >&2

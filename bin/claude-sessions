@@ -125,6 +125,24 @@ done
 SUM_FILE_SUFFIX=""
 [ "$SUM_LANG" = orig ] && SUM_FILE_SUFFIX=".orig"
 
+# Every path a session id owns. Deleting only the transcript would leave the
+# subagent logs, env, history and usage records behind as orphans.
+footprint_of() {
+  local sid="$1" transcript="$2" proj_dir
+  proj_dir=$(dirname "$transcript")
+  printf '%s\n' \
+    "$transcript" \
+    "$proj_dir/$sid" \
+    "$CONFIG_DIR/file-history/$sid" \
+    "$CONFIG_DIR/session-env/$sid" \
+    "$CONFIG_DIR/usage-data/facets/$sid.json" \
+    "$CONFIG_DIR/usage-data/session-meta/$sid.json" \
+    "$CONFIG_DIR/security/security_warnings_state_$sid.json" \
+    "$CONFIG_DIR/security/security_warnings_state_$sid.lock" \
+    "$SUM_CACHE/claude-$sid.md" \
+    "$SUM_CACHE/claude-$sid.orig.md"
+}
+
 # ── summary of one session ──────────────────────────────────────────────────
 #
 # A transcript is thousands of lines; what a person wants back a week later is
@@ -498,30 +516,57 @@ if [ -n "$SUM_ID" ]; then
   # --setting-sources '' and an empty MCP config are not tidiness: with the
   # user's CLAUDE.md, skills and MCP servers loaded, the same one-line prompt
   # measured 40 179 input tokens against 4 591 without them.
+  # Summarizing writes a session of its own — `claude -p` is a session like any
+  # other. Left alone, every --sum added a row to the very listing this script
+  # exists to keep readable, and two summaries in a row looked like the tool
+  # breeding sessions.
+  #
+  # The id is chosen here rather than read back afterwards, so the cleanup knows
+  # what to remove even when the call fails or is interrupted.
+  scratch_id=$(python3 -c 'import uuid; print(uuid.uuid4())')
+
+  sum_scratch_remove() {
+    local sid="$1" path
+    [ -n "$sid" ] || return 0
+    path=$(find "$PROJECTS_DIR" -maxdepth 2 -name "$sid.jsonl" -print -quit 2>/dev/null || true)
+    [ -n "$path" ] || return 0
+    footprint_of "$sid" "$path" | while IFS= read -r p; do
+      if [ -e "$p" ]; then rm -rf "$p"; fi
+    done
+  }
+
+  # An interrupted summary must not leave its scratch session behind either.
+  trap 'sum_progress_stop; sum_scratch_remove "$scratch_id"' EXIT INT TERM
+
   sum_progress_start "summarizing $(printf '%s\n' "$digest" | grep -c '^## part') part(s) with $model"
 
   summary=$(printf '%s\n\n%s\n' "$SUM_PROMPT" "$digest" |
     claude -p \
       --model "$model" \
+      --session-id "$scratch_id" \
       --setting-sources '' \
       --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
       --disable-slash-commands \
       --disallowedTools "Bash Edit Write Read Glob Grep WebFetch WebSearch Agent Task" \
       2>/dev/null) || summary=""
   sum_progress_stop
+  sum_scratch_remove "$scratch_id"
 
   # A model name from a catalogue can be one this account cannot call. Rather
   # than fail, fall back to whatever model the CLI would have chosen itself.
   if [ -z "$summary" ] && [ -z "$SUM_MODEL" ]; then
+    scratch_id=$(python3 -c 'import uuid; print(uuid.uuid4())')
     sum_progress_start "retrying with the model the CLI picks itself"
     summary=$(printf '%s\n\n%s\n' "$SUM_PROMPT" "$digest" |
       claude -p \
+        --session-id "$scratch_id" \
         --setting-sources '' \
         --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
         --disable-slash-commands \
         --disallowedTools "Bash Edit Write Read Glob Grep WebFetch WebSearch Agent Task" \
         2>/dev/null) || summary=""
     sum_progress_stop
+    sum_scratch_remove "$scratch_id"
     model="(CLI default)"
   fi
 
@@ -603,23 +648,6 @@ rows=$(sort -t $'\t' -k1,1nr "$tmpfile")
 [ -n "$FILTER" ] && rows=$(echo "$rows" | grep -F "$FILTER" || true)
 [ "$LIMIT" != 0 ] && rows=$(echo "$rows" | head -n "$LIMIT")
 
-# Every path a session id owns. Deleting only the transcript would leave the
-# subagent logs, env, history and usage records behind as orphans.
-footprint_of() {
-  local sid="$1" transcript="$2" proj_dir
-  proj_dir=$(dirname "$transcript")
-  printf '%s\n' \
-    "$transcript" \
-    "$proj_dir/$sid" \
-    "$CONFIG_DIR/file-history/$sid" \
-    "$CONFIG_DIR/session-env/$sid" \
-    "$CONFIG_DIR/usage-data/facets/$sid.json" \
-    "$CONFIG_DIR/usage-data/session-meta/$sid.json" \
-    "$CONFIG_DIR/security/security_warnings_state_$sid.json" \
-    "$CONFIG_DIR/security/security_warnings_state_$sid.lock" \
-    "$SUM_CACHE/claude-$sid.md" \
-    "$SUM_CACHE/claude-$sid.orig.md"
-}
 
 if [ "$DELETE_MODE" = 1 ]; then
   candidates=$(printf '%s\n' "$rows" | awk -F'\t' \

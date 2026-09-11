@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.6.0
+
+**Summarizing no longer breeds sessions.**
+
+`claude -p` and `codex exec` open a session like anything else, so every `--sum`
+added a row to the listing this tool exists to keep readable — two summaries in
+a row looked like the tool multiplying sessions by itself. opencode was already
+cleaned up after; the other two were not.
+
+Each is removed by something that cannot match a session belonging to someone
+else. Claude Code takes a `--session-id` chosen here, so exactly one UUID is
+deleted, and the cleanup runs from a trap as well, for a summary interrupted
+half way. Codex chooses its own id, so the rollout is identified by having
+appeared during the call *and* containing the prompt this script sends —
+deleting the newest file instead would have taken the rollout of a Codex
+running in another terminal, which appends to it continuously.
+
+Three tests stand on it now, including one that a rollout which is not ours
+survives.
+
 ## 0.5.2
 
 **Both READMEs say why an old session is missing from the listing.** It looks

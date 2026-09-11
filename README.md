@@ -156,6 +156,16 @@ Each command calls **its own IDE's CLI** — `claude -p`, `codex exec`,
 binding one tool's feature to another tool's binary would make it unavailable
 exactly where it is needed.
 
+That call is itself a session, and each IDE records it. Summarizing therefore
+removes what it created, by a means that cannot reach anything else:
+`claude-sessions` passes a `--session-id` it generated, so the cleanup names one
+UUID; `opencode-sessions` gives its scratch session a title and deletes by that
+title; `codex-sessions`, where the id is the CLI's to choose, takes only a
+rollout that both appeared during the call and contains the prompt this script
+sends. Deleting by "newest file" would have been the obvious shortcut and is
+wrong — a Codex running in another terminal appends to its rollout the whole
+time.
+
 ### How long it takes, and what is stored
 
 The model call is the whole wait. Measured on a 9 MB, 4577-line transcript:

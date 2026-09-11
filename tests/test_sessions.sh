@@ -339,6 +339,90 @@ print(sum(db.execute('SELECT COUNT(*) FROM ' + t).fetchone()[0]
 if [ "$left" = 0 ]; then ok "child tables go with the session"
 else nope "child tables go with the session" "rows left: $left"; fi
 
+# ── summarizing leaves no session of its own ───────────────────────────────
+# `claude -p` and `codex exec` are sessions like any other, so every --sum used
+# to add a row to the listing this tool exists to keep readable. Stubs stand in
+# for the CLIs: they write the transcript a real run would write, and the test
+# is that it is gone afterwards.
+echo "no scratch sessions"
+
+# A rollout of its own, so the cleanup test does not depend on one the delete
+# tests have already removed.
+CSID2="01a00000-0000-7000-8000-000000000009"
+CT2="$CODEX_HOME/sessions/2026/03/02/rollout-2026-03-02T13-00-00-$CSID2.jsonl"
+python3 - "$CT2" <<'PY2'
+import json, sys
+rows = [
+    {"timestamp": "2026-03-02T13:00:00.000Z", "type": "session_meta",
+     "payload": {"session_id": "01a00000-0000-7000-8000-000000000009",
+                 "cwd": "/srv/app"}},
+    {"timestamp": "2026-03-02T13:00:01.000Z", "type": "event_msg",
+     "payload": {"type": "user_message", "message": "tag the release"}},
+    {"timestamp": "2026-03-02T13:00:02.000Z", "type": "event_msg",
+     "payload": {"type": "agent_message", "message": "tagged v1.2.0"}},
+]
+with open(sys.argv[1], 'w') as fh:
+    for r in rows:
+        fh.write(json.dumps(r) + "\n")
+PY2
+
+mkdir -p "$TMP/stub"
+cat > "$TMP/stub/claude" <<'STUB'
+#!/usr/bin/env bash
+sid=""
+prev=""
+for a in "$@"; do
+    [ "$prev" = "--session-id" ] && sid="$a"
+    prev="$a"
+done
+cat > /dev/null
+[ -n "$sid" ] && printf '{}\n' > "$CLAUDE_CONFIG_DIR/projects/-work-repo/$sid.jsonl"
+printf '### stub summary\n'
+STUB
+chmod 755 "$TMP/stub/claude"
+export PATH="$TMP/stub:$PATH"
+
+export IDE_SESSIONS_SUM_CACHE="$TMP/cache2"
+before=$(ls "$CLAUDE_DIR/projects/-work-repo" | wc -l)
+out="$("$ROOT/bin/claude-sessions" --sum "$SID" --sum-model stub 2>&1)"
+after=$(ls "$CLAUDE_DIR/projects/-work-repo" | wc -l)
+contains "the summary is returned" "$out" "### stub summary"
+if [ "$before" = "$after" ]; then ok "claude: --sum leaves no new transcript"
+else nope "claude: --sum leaves no new transcript" "$before before, $after after"; fi
+
+cat > "$TMP/stub/codex" <<'STUB'
+#!/usr/bin/env bash
+out=""
+prev=""
+for a in "$@"; do
+    [ "$prev" = "-o" ] && out="$a"
+    prev="$a"
+done
+prompt="$(cat)"
+day="$CODEX_HOME/sessions/2026/03/09"
+mkdir -p "$day"
+printf '%s\n' "$prompt" > "$day/rollout-2026-03-09T10-00-00-$(date +%s%N).jsonl"
+[ -n "$out" ] && printf '### stub codex summary\n' > "$out"
+STUB
+chmod 755 "$TMP/stub/codex"
+
+before=$(find "$CODEX_HOME/sessions" -name 'rollout-*.jsonl' | wc -l)
+out="$("$ROOT/bin/codex-sessions" --sum "$CSID2" 2>&1)"
+after=$(find "$CODEX_HOME/sessions" -name 'rollout-*.jsonl' | wc -l)
+contains "the summary is returned" "$out" "### stub codex summary"
+if [ "$before" = "$after" ]; then ok "codex: --sum leaves no new rollout"
+else nope "codex: --sum leaves no new rollout" "$before before, $after after"; fi
+
+# A rollout that was already there, and one written by something else during the
+# call, must both survive.
+printf 'someone else at work\n' > "$CODEX_HOME/sessions/2026/03/09/rollout-2026-03-09T11-00-00-other.jsonl"
+"$ROOT/bin/codex-sessions" --sum "$CSID2" --sum-refresh >/dev/null 2>&1
+if [ -f "$CODEX_HOME/sessions/2026/03/09/rollout-2026-03-09T11-00-00-other.jsonl" ]; then
+    ok "codex: a rollout that is not ours is left alone"
+else
+    nope "codex: a rollout that is not ours is left alone" "it was deleted"
+fi
+
 # ── deleting takes the cached summary with it ───────────────────────────────
 echo "delete clears the cache"
 
