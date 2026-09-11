@@ -36,6 +36,7 @@ FULL_PATH=0
 PROJECT_SCOPE=0
 RM_IDS=""
 RM_ALL=0
+EVERYWHERE=0
 OLDER_THAN=""
 MAX_TURNS=""
 APPLY=0
@@ -76,6 +77,7 @@ Summary of one session, grouped by topic (English unless --sum-orig):
 Delete selection (combine freely; substring and -p narrow it further):
   --rm IDS          comma-separated session ids; confirms, then deletes
   --rm-all          every session the filters above select (needs --apply)
+  --everywhere      allow --rm-all with no -p and no substring: all projects
   --older-than N    sessions untouched for more than N days
   --max-turns N     sessions with N messages or fewer
   --apply           required by --older-than/--max-turns, which dry-run otherwise
@@ -94,6 +96,7 @@ while [ $# -gt 0 ]; do
     -p) PROJECT_SCOPE=1; shift ;;
     --rm) RM_IDS="$2"; shift 2 ;;
     --rm-all) RM_ALL=1; shift ;;
+    --everywhere) EVERYWHERE=1; shift ;;
     --sum) SUM_ID="$2"; shift 2 ;;
     --sum-model) SUM_MODEL="$2"; shift 2 ;;
     --sum-gap) SUM_GAP="$2"; shift 2 ;;
@@ -127,6 +130,21 @@ BULK=0
 [ -n "$OLDER_THAN$MAX_TURNS" ] && BULK=1
 # --rm-all is the widest selection there is, so it dry-runs like the rest.
 [ "$RM_ALL" = 1 ] && BULK=1
+
+# --rm-all with nothing to narrow it selects every session on the machine. That
+# is the one command a person runs before reading the rest of the help, so it
+# refuses: a scope has to be named, or the global sweep asked for by name.
+if [ "$RM_ALL" = 1 ] && [ "$PROJECT_SCOPE" != 1 ] && [ -z "$FILTER" ] && [ "$EVERYWHERE" != 1 ]; then
+  {
+    echo "--rm-all needs something to narrow it — on its own it means every session"
+    echo "of every project on this machine."
+    echo
+    echo "  opencode-sessions -p --rm-all --apply          this project only"
+    echo "  opencode-sessions <substring> --rm-all --apply  directories matching <substring>"
+    echo "  opencode-sessions --rm-all --everywhere        every project, listed first"
+  } >&2
+  exit 1
+fi
 
 for n in "$OLDER_THAN" "$MAX_TURNS"; do
   case "$n" in

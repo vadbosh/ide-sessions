@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.2
+
+**A bare `--rm-all` refuses instead of selecting the whole machine.** Unscoped
+it means every session of every project, and that is exactly the form someone
+types first — before finding the `-p` that narrows it. It now prints the three
+scoped forms and exits 1. The machine-wide sweep still exists, asked for by
+name: `--rm-all --everywhere`, dry-running like everything else.
+
 ## 0.6.1
 
 **`--rm-all` deletes everything the filters select.** Clearing one project meant

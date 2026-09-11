@@ -98,6 +98,16 @@ claude-sessions -p --rm-all --apply # everything in this project
 claude-sessions k8s --rm-all        # everything matching a directory, dry-run
 ```
 
+`--rm-all` refuses to run with nothing narrowing it. On its own it would mean
+every session of every project, and that is the form a person types first —
+before reading the flag that scopes it. Name a scope with `-p` or a substring,
+or ask for the machine-wide sweep by its name:
+
+```bash
+claude-sessions --rm-all                   # refuses, explains, exits 1
+claude-sessions --rm-all --everywhere      # every project — still a dry run
+```
+
 Deleting moves files to `~/.cache/ide-sessions-trash/<ide>-<timestamp>/`, so a
 mistake is recoverable. Naming an id is intent enough to delete after a
 confirmation; bulk criteria can sweep up far more than expected, so they stay a

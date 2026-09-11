@@ -478,6 +478,23 @@ with open(sys.argv[1], 'w') as fh:
                          "message": {"content": [{"type": "text", "text": "y"}]}}) + "\n")
 PY2
 
+# The first thing anyone types is the bare flag. On its own it would mean every
+# session of every project, so it has to refuse before it is ever run twice.
+out="$("$ROOT/bin/claude-sessions" --rm-all 2>&1)"
+rc=$?
+contains "a bare --rm-all refuses" "$out" "needs something to narrow it"
+if [ "$rc" != 0 ]; then ok "a bare --rm-all exits non-zero"
+else nope "a bare --rm-all exits non-zero" "exit $rc"; fi
+still=$(find "$CLAUDE_DIR/projects" -name '*.jsonl' | wc -l)
+
+out="$("$ROOT/bin/claude-sessions" --rm-all --apply --yes 2>&1)"
+now=$(find "$CLAUDE_DIR/projects" -name '*.jsonl' | wc -l)
+if [ "$still" = "$now" ]; then ok "a bare --rm-all --apply still deletes nothing"
+else nope "a bare --rm-all --apply still deletes nothing" "$still then, $now now"; fi
+
+out="$("$ROOT/bin/claude-sessions" --rm-all --everywhere 2>&1)"
+contains "--everywhere names the sweep explicitly" "$out" "Dry run. Nothing deleted"
+
 out="$("$ROOT/bin/claude-sessions" bulk --rm-all 2>&1)"
 contains "--rm-all selects the filtered set" "$out" "3 session(s)"
 contains "--rm-all dry-runs first"           "$out" "Dry run. Nothing deleted"
