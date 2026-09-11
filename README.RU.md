@@ -124,14 +124,15 @@ claude-sessions --sum <ID> --sum-model X   # суммировать конкре
 
 ```
 $ codex-sessions --sum 01a05994-7729-7e32-99c9-f6b53f98199e
-### Environment Inspection and Secret Masking
-- Replaced `env` with `safe-env` because project rules prohibited full dumps.
-- Ran `safe-env` successfully with secrets masked; exit code was `0`.
+### File listing tool replacement
+- Diagnosed `--group-directories-first` sorting bug in uutils coreutils 0.8.0.
+- Replaced the `ll` alias with an eza-based one, fixed the time format.
 
 $ opencode-sessions --sum-orig ses_fa66c4184ffepvA00VLoagntRt
-### Отказ от `env` в пользу `safe-env`
-- Запрос `env` отклонён: дамп окружения пишет ключи в транскрипт.
-- Выполнен `safe-env`; токены вышли как `<REDACTED:N>`.
+### Исправление сортировки в alias ll
+- Выявлен дефект в uutils coreutils 0.8.0: `--group-directories-first`
+  отменяет сортировку по имени.
+- Удалён мёртвый alias `lld`, вызывавший отсутствующую команду `lsd`.
 ```
 
 ## Как работает `--sum`
@@ -181,8 +182,7 @@ ASKED: api token is <REDACTED:40> and it expired
 ASKED: checked out 9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c from main
 ```
 
-Два уровня, перенесены из [env2hell](https://github.com/vadbosh/env2hell), где
-`safe-env` и `secrets-redact` решают ту же задачу для вывода команд.
+Два уровня, потому что форма сама по себе решить не может.
 
 **Уровень 1, решает форма.** `ghp_`, `github_pat_`, `AKIA`, `glpat-`, `xox…`,
 `sk-` (включая `sk-ant-`, `sk-proj-`, `sk-or-v1-`), `AIza`, `sk_live_`,

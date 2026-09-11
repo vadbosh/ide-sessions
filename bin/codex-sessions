@@ -182,8 +182,8 @@ def blocks(content):
 # being recorded.
 #
 # So masking happens here, before anything leaves the process, and --sum-raw
-# shows exactly what would have been sent. The tiers match `safe-env`: a shape
-# that can only be a token is masked anywhere, while a shape that merely could
+# shows exactly what would have been sent. Two tiers: a shape that can only be
+# a token is masked anywhere, while a shape that merely could
 # be one — 40 characters of base62, 32 of hex — is masked only where a
 # credential word stands beside it. Otherwise every git SHA in the session
 # would come back as <REDACTED>.

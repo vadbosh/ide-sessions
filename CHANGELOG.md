@@ -20,8 +20,7 @@ SHA or a build id, so tier 1 cannot claim them. The label beside the value can,
 and now does: `HW_ACCESS_KEY=`, `HUAWEICLOUD_SDK_AK=`, `OS_SECRET_KEY:`, plus
 the flag forms `--token`, `--pass` and `Authorization: Bearer`. Jira arrives in
 both tiers — `ATATT` and the legacy `at-` prefix by shape, `jira --token …` by
-the flag. The patterns and the two-tier split come from
-[env2hell](https://github.com/vadbosh/env2hell).
+the flag.
 
 **The documentation stopped being about Claude Code only.**
 
@@ -46,11 +45,11 @@ vendor than the session itself ran on — into a cache file, and onto the
 terminal of the session asking, which is recorded in turn.
 
 Masking now happens in the digest, before anything leaves the process, and
-`--sum-raw` shows exactly what would have been sent. Two tiers, matching
-`safe-env`: an unmistakable shape (`ghp_`, `AKIA`, `glpat-`, `xox…`, `sk-`,
-`AIza`, `ATATT`, `hf_`, `dckr_pat_`, a JWT, a PEM header, a password inside a
-URL) is masked anywhere; a merely plausible one (40 characters of base62, 32 of
-hex) only on a line that also names a credential, in English or Russian.
+`--sum-raw` shows exactly what would have been sent. Two tiers: an unmistakable
+shape (`ghp_`, `AKIA`, `glpat-`, `xox…`, `sk-`, `AIza`, `ATATT`, `hf_`,
+`dckr_pat_`, a JWT, a PEM header, a password inside a URL) is masked anywhere; a
+merely plausible one (40 characters of base62, 32 of hex) only on a line that
+also names a credential, in English or Russian.
 Without that condition every git SHA would come back as `<REDACTED>`.
 
 The marker keeps the length of what it replaced. URLs keep their scheme and
