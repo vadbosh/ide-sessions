@@ -106,6 +106,13 @@ contains "claude: -p in a fresh directory explains itself" "$out" "No sessions b
 if [ "$rc" = 0 ]; then ok "claude: -p in a fresh directory exits 0"
 else nope "claude: -p in a fresh directory exits 0" "exit $rc"; fi
 
+# One state, one sentence: a missing project directory and a present one with
+# no sessions in it are the same fact to the reader, and used to print two
+# different messages of different lengths in the same tool.
+lines=$(printf '%s\n' "$out" | grep -c .)
+if [ "$lines" = 1 ]; then ok "claude: the empty result is one line, like the others"
+else nope "claude: the empty result is one line, like the others" "$lines lines"; fi
+
 # Codex and opencode have no store at all at this point in the run, which is its
 # own case: a fresh machine, before the first session was ever written.
 out=$(cd "$EMPTY" && "$ROOT/bin/codex-sessions" -p 2>&1)

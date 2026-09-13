@@ -9,10 +9,15 @@ missing path failed, and `set -euo pipefail` ended the script before its first
 line of output. `codex-sessions` had the same hole for a machine with no
 `~/.codex/sessions` yet.
 
-Both now say what happened. And an empty result is no longer an empty table in
-any of the three: the message names the scope that came up empty — this
-directory, that substring, or nothing recorded at all — because a bare header
-row is indistinguishable from a tool that failed quietly.
+Both now say what happened, and in the same sentence: a missing project
+directory and a present one holding no sessions are one fact to whoever is
+reading, so they no longer print two different messages of two different
+lengths in the same tool.
+
+An empty result is no longer an empty table in any of the three either: the
+message names the scope that came up empty — this directory, that substring, or
+nothing recorded at all — because a bare header row is indistinguishable from a
+tool that failed quietly.
 
 ## 0.6.4
 

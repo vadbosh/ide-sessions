@@ -655,24 +655,15 @@ fi
 
 # A directory that never hosted a session has no project dir at all, and `find`
 # over a missing path fails — which, under `set -euo pipefail`, killed the
-# script before it printed anything. `claude-sessions -p` in a fresh directory
-# therefore produced no output and exit 1, while the other two printed an empty
-# table. Say it plainly instead.
-if [ ! -d "$SCAN_DIR" ]; then
-  if [ "$PROJECT_SCOPE" = 1 ]; then
-    echo "No sessions bound to $(pwd)."
-    echo "Claude Code files a session under the directory it was launched from;"
-    echo "this one has none. Drop -p to see every project."
-  else
-    echo "No sessions: $SCAN_DIR does not exist."
-  fi
-  exit 0
-fi
+# script before it printed anything: no output, exit 1. Skipping the scan
+# instead leaves the row list empty, and the one message every empty result
+# shares says the rest. One state, one sentence, the same in all three tools.
 
 # Collect: mtime_epoch \t session_id \t cwd \t turns \t transcript_path
 tmpfile=$(mktemp)
 trap 'rm -f "$tmpfile"' EXIT
 
+if [ -d "$SCAN_DIR" ]; then
 find "$SCAN_DIR" -maxdepth "$SCAN_DEPTH" -name "*.jsonl" -print0 2>/dev/null | while IFS= read -r -d '' f; do
   mtime=$(stat -c %Y "$f" 2>/dev/null || echo 0)
   [ "$mtime" = 0 ] && continue
@@ -682,6 +673,7 @@ find "$SCAN_DIR" -maxdepth "$SCAN_DEPTH" -name "*.jsonl" -print0 2>/dev/null | w
   turns=$(wc -l < "$f" 2>/dev/null | tr -d ' ')
   printf '%s\t%s\t%s\t%s\t%s\n' "$mtime" "$sid" "$cwd" "$turns" "$f" >> "$tmpfile"
 done
+fi
 
 now=$(date +%s)
 
