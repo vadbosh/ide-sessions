@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.5
+
+**`claude-sessions -p` printed nothing at all in a directory that never hosted
+a session.** No header, no message, exit 1. Claude Code files a session under a
+directory derived from the cwd, that directory did not exist, `find` over a
+missing path failed, and `set -euo pipefail` ended the script before its first
+line of output. `codex-sessions` had the same hole for a machine with no
+`~/.codex/sessions` yet.
+
+Both now say what happened. And an empty result is no longer an empty table in
+any of the three: the message names the scope that came up empty — this
+directory, that substring, or nothing recorded at all — because a bare header
+row is indistinguishable from a tool that failed quietly.
+
 ## 0.6.4
 
 **Every example that deletes now says DELETES.** The help listed

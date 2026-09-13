@@ -90,6 +90,33 @@ absent "a wide gap keeps one part" "$out" "## part 2"
 out="$("$ROOT/bin/claude-sessions" --sum no-such-session --sum-raw 2>&1)"
 contains "unknown id is an error" "$out" "No transcript for session"
 
+# ── an empty result says so ─────────────────────────────────────────────────
+# `-p` in a directory that never hosted a session used to print nothing at all
+# and exit 1: the project directory does not exist, `find` failed, and
+# `set -euo pipefail` killed the script before the header. The other two printed
+# an empty table, which is only marginally better — an empty table is a shrug.
+echo "empty results"
+
+EMPTY="$TMP/never-used"
+mkdir -p "$EMPTY"
+
+out=$(cd "$EMPTY" && "$ROOT/bin/claude-sessions" -p 2>&1)
+rc=$?
+contains "claude: -p in a fresh directory explains itself" "$out" "No sessions bound to"
+if [ "$rc" = 0 ]; then ok "claude: -p in a fresh directory exits 0"
+else nope "claude: -p in a fresh directory exits 0" "exit $rc"; fi
+
+# Codex and opencode have no store at all at this point in the run, which is its
+# own case: a fresh machine, before the first session was ever written.
+out=$(cd "$EMPTY" && "$ROOT/bin/codex-sessions" -p 2>&1)
+rc=$?
+contains "codex: no sessions tree at all is explained" "$out" "No sessions"
+if [ "$rc" = 0 ]; then ok "codex: a missing sessions tree exits 0"
+else nope "codex: a missing sessions tree exits 0" "exit $rc"; fi
+
+out="$("$ROOT/bin/claude-sessions" zzzznope 2>&1)"
+contains "a substring with no match names the substring" "$out" 'contains "zzzznope"'
+
 # ── redaction ───────────────────────────────────────────────────────────────
 # All values below are invented and match no real account. They are here
 # because a secret in a session must not reach the model, the cache file or the
@@ -236,6 +263,9 @@ PY
 out="$("$ROOT/bin/codex-sessions" --sum "$OSID" --sum-raw 2>&1)"
 contains "reads the pre-0.154 layout" "$out" "rotate the logs"
 
+out=$(cd "$EMPTY" && "$ROOT/bin/codex-sessions" -p 2>&1)
+contains "codex: -p in a foreign directory names the scope" "$out" "No sessions bound to"
+
 # A file written across an upgrade carries both forms of the same turn.
 BSID="01a00000-0000-7000-8000-000000000003"
 BT="$CODEX_HOME/sessions/2026/03/02/rollout-2026-03-02T12-00-00-$BSID.jsonl"
@@ -306,6 +336,9 @@ contains "names the directory"  "$out" "/opt/site"
 
 out="$("$ROOT/bin/opencode-sessions" -n 5 2>&1)"
 contains "lists without the sqlite3 CLI" "$out" "$OCSID"
+
+out=$(cd "$EMPTY" && "$ROOT/bin/opencode-sessions" -p 2>&1)
+contains "opencode: -p in a foreign directory names the scope" "$out" "No sessions bound to"
 
 out="$("$ROOT/bin/opencode-sessions" --sum ses_nope --sum-raw 2>&1)"
 contains "unknown id is an error" "$out" "No session ses_nope"

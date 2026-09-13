@@ -653,6 +653,22 @@ if [ "$PROJECT_SCOPE" = 1 ]; then
   SCAN_DEPTH=1
 fi
 
+# A directory that never hosted a session has no project dir at all, and `find`
+# over a missing path fails — which, under `set -euo pipefail`, killed the
+# script before it printed anything. `claude-sessions -p` in a fresh directory
+# therefore produced no output and exit 1, while the other two printed an empty
+# table. Say it plainly instead.
+if [ ! -d "$SCAN_DIR" ]; then
+  if [ "$PROJECT_SCOPE" = 1 ]; then
+    echo "No sessions bound to $(pwd)."
+    echo "Claude Code files a session under the directory it was launched from;"
+    echo "this one has none. Drop -p to see every project."
+  else
+    echo "No sessions: $SCAN_DIR does not exist."
+  fi
+  exit 0
+fi
+
 # Collect: mtime_epoch \t session_id \t cwd \t turns \t transcript_path
 tmpfile=$(mktemp)
 trap 'rm -f "$tmpfile"' EXIT
@@ -794,6 +810,19 @@ if [ "$DELETE_MODE" = 1 ]; then
   echo
   echo "Restore everything:  cp -a $trash/* /"
   echo "Free the space:       delete that trash dir once you are sure"
+  exit 0
+fi
+
+# An empty table is a shrug. Say which scope came up empty, since the answer
+# differs: no sessions here, no session matching that substring, or none at all.
+if [ -z "$(printf '%s' "$rows" | tr -d '[:space:]')" ]; then
+  if [ "$PROJECT_SCOPE" = 1 ]; then
+    echo "No sessions bound to $(pwd). Drop -p to see every project."
+  elif [ -n "$FILTER" ]; then
+    echo "No sessions whose directory contains \"$FILTER\"."
+  else
+    echo "No sessions recorded yet."
+  fi
   exit 0
 fi
 

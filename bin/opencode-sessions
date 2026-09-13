@@ -815,6 +815,19 @@ COMMIT;
   exit 0
 fi
 
+# An empty table is a shrug. Say which scope came up empty, since the answer
+# differs: no sessions here, no session matching that substring, or none at all.
+if [ -z "$(printf '%s' "$rows" | tr -d '[:space:]')" ]; then
+  if [ "$PROJECT_SCOPE" = 1 ]; then
+    echo "No sessions bound to $(pwd). Drop -p to see every project."
+  elif [ -n "$FILTER" ]; then
+    echo "No sessions whose directory contains \"$FILTER\"."
+  else
+    echo "No sessions recorded yet."
+  fi
+  exit 0
+fi
+
 printf "%-30s %-10s %-6s %-8s %-11s %s\n" "SESSION ID (full)" "LAST" "MSGS" "COST" "DATE" "DIR"
 
 while IFS=$'\t' read -r sid directory tupd msgs cost; do

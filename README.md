@@ -360,6 +360,11 @@ summarized with claude-haiku-4-5-20251001
 
 ## Notes per IDE
 
+An empty result always says which scope came up empty. `-p` in a directory
+that never hosted a session is the common case, and it is not an error — Claude
+Code derives the project directory from the cwd, so a directory it was never
+launched from has none.
+
 **Claude Code** — one `.jsonl` per session under `~/.claude/projects/<hash>/`.
 A session is more than its transcript: subagent logs, file history, session
 env, usage data and security state are all keyed by the same id, and `--rm`
