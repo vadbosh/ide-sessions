@@ -26,3 +26,6 @@ GEMINI.md
 
 # Local release state, never shared
 .release.local
+
+# kb — рабочие заметки ассистента, той же природы что CLAUDE.md
+kb/
