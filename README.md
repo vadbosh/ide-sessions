@@ -45,14 +45,14 @@ says otherwise.
 
 ---
 
-## Why
+## Why ide-sessions exists
 
 Two problems, one per half of the tool.
 
 **Where a session actually lives.** Each IDE files a session by its own rule,
 and none of them is the directory you are standing in when you go looking.
 Claude Code hashes the directory `claude` was launched from and never revisits
-that — not even when you `cd` somewhere else inside the running session, so a
+that — not even when you `cd` somewhere else inside the running session. A
 session started in one cluster directory can carry a whole day of work about
 another, and `--resume` will not find it where you expect. Codex writes a
 rollout under the date it started, which is a different date from the work when
@@ -175,15 +175,18 @@ exactly where it is needed.
 
 That call is itself a session, and each IDE records it. Summarizing therefore
 removes what it created, by a means that cannot reach anything else:
-`claude-sessions` passes a `--session-id` it generated, so the cleanup names one
-UUID; `opencode-sessions` gives its scratch session a title and deletes by that
-title; `codex-sessions`, where the id is the CLI's to choose, takes only a
-rollout that both appeared during the call and contains the prompt this script
-sends. Deleting by "newest file" would have been the obvious shortcut and is
-wrong — a Codex running in another terminal appends to its rollout the whole
-time.
 
-### How long it takes, and what is stored
+- `claude-sessions` passes a `--session-id` it generated, so the cleanup names
+  one UUID;
+- `opencode-sessions` gives its scratch session a title and deletes by that
+  title;
+- `codex-sessions`, where the id is the CLI's to choose, takes only a rollout
+  that both appeared during the call and contains the prompt this script sends.
+
+Deleting by "newest file" would have been the obvious shortcut and is wrong: a
+Codex running in another terminal appends to its rollout the whole time.
+
+### How long a summary takes, and what it stores
 
 The model call is the whole wait. Measured on a 9 MB, 4577-line transcript:
 
@@ -223,7 +226,7 @@ resumed since then re-summarizes itself because its mtime moved.
 
 Nothing is ever appended. A re-run replaces that one file wholesale, because
 the new summary is made from the whole transcript, not from the part added
-since — a summary of the last hour with the first hour missing would be worse
+since. A summary of the last hour with the first hour missing would be worse
 than none. Deleting a file, or the whole directory, costs exactly one re-run;
 there is no other state. `--rm` removes a session's summaries along with the
 session, into the same recoverable trash directory.
@@ -264,14 +267,18 @@ Two tiers, because shape alone cannot decide.
 appears.
 
 **Tier 2, the name decides.** Huawei Cloud and OpenStack are the reason this
-tier has to exist: their access key is 20 characters of upper case and digits
-and the secret 40 of base62 — the same shapes as a git SHA, a build id, half
-the identifiers in ordinary output. No pattern can claim them without taking
+tier has to exist. Their access key is 20 characters of upper case and digits,
+the secret 40 of base62 — the same shapes as a git SHA, a build id, half the
+identifiers in ordinary output. No pattern can claim them without taking
 everything else too. So a long value is masked when the thing beside it is
-named like a credential — `HW_ACCESS_KEY=`, `HUAWEICLOUD_SDK_AK=`,
-`OS_SECRET_KEY:`, `--token`, `--pass`, `Authorization: Bearer`, anything whose
-name contains password, secret, token, credential — and, more loosely, when a
-credential word appears anywhere on the line (English or Russian).
+named like a credential:
+
+- `HW_ACCESS_KEY=`, `HUAWEICLOUD_SDK_AK=`, `OS_SECRET_KEY:`;
+- `--token`, `--pass`, `Authorization: Bearer`;
+- anything whose name contains password, secret, token, credential.
+
+More loosely, a value is masked when a credential word appears anywhere on the
+line, in English or in Russian.
 
 The last line of the example above is what that condition buys: a 40-character
 SHA with no credential word beside it stays readable. A summary that hides its
@@ -285,7 +292,7 @@ and their directory `0700`. None of this recovers a key that was already in the
 transcript — rotate that one. It stops the summary from copying it somewhere
 new.
 
-### Cost
+### What a summary costs
 
 Measured, not estimated. A headless `claude -p` run inherits your `CLAUDE.md`,
 skills and MCP servers unless told otherwise — a one-line prompt billed
@@ -333,9 +340,9 @@ of the answer has no bearing on which model writes it.
 2. Otherwise no `--model` flag at all, which leaves opencode's own resolution
    order in place: the `model` field in its config, then the last model used.
    Picking a cheaper one from the catalogue here is possible and deliberately
-   not done — opencode reaches ~385 models across providers whose availability
-   differs per machine and per login, and a summary that silently ran on
-   something the user never configured is worse than one that cost more.
+   not done. opencode reaches ~385 models across providers whose availability
+   differs per machine and per login. A summary that silently ran on something
+   the user never configured is worse than one that cost more.
 
 Which model actually wrote a summary is printed on stderr, so `--sum | …` stays
 pure summary:
@@ -360,10 +367,10 @@ summarized with claude-haiku-4-5-20251001
 
 ## Notes per IDE
 
-An empty result always says which scope came up empty. `-p` in a directory
-that never hosted a session is the common case, and it is not an error — Claude
-Code derives the project directory from the cwd, so a directory it was never
-launched from has none.
+An empty result always says which scope came up empty. `-p` in a directory that
+never hosted a session is the common case, and it is not an error. Claude Code
+derives the project directory from the cwd, so a directory it was never launched
+from has none.
 
 **Claude Code** — one `.jsonl` per session under `~/.claude/projects/<hash>/`.
 A session is more than its transcript: subagent logs, file history, session
@@ -373,10 +380,10 @@ moves the whole footprint to the trash.
 ### Why an old session is missing
 
 Only Claude Code deletes anything. It prunes transcripts older than
-`cleanupPeriodDays` from `settings.json` — 30 days by default — and the pruning
-takes the `.jsonl` while leaving the project directory and whatever else lives
-in it, so a directory full of notes and no sessions is the normal look of a
-session that aged out. Raising the setting does not bring back what a previous
+`cleanupPeriodDays` from `settings.json` — 30 days by default. The pruning
+takes the `.jsonl` and leaves the project directory with whatever else lives in
+it. A directory full of notes and no sessions is the normal look of a session
+that aged out. Raising the setting does not bring back what a previous
 run already removed.
 
 Codex and opencode keep everything: no time limit, no size limit, nothing to
