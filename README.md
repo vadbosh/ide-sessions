@@ -407,6 +407,11 @@ keeps them, and which model `--sum` would use without the flag:
   variable proves nothing about the key. `--list-models <provider>` shows one
   provider, that kind included.
 
+No provider or model name is written into the scripts: every run asks the IDE
+again — `opencode models` and `opencode auth list`, Codex's catalogue file,
+Claude's transcripts. Connect another provider, log out of one, or let Codex
+refresh its catalogue, and the next `--list-models` shows the change.
+
 **`claude-sessions`**, in order, first hit wins:
 
 1. `--sum-model M`, else `IDE_SESSIONS_SUM_MODEL`.
@@ -522,6 +527,11 @@ summarize a digest full of hook noise.
 `billing` is tested against a stub in place of ccusage that prints canned JSON
 in the shape ccusage writes: the layout and the session lookup are what can go
 wrong here, and the prices are ccusage's own business.
+
+`--list-models` for opencode runs against a stub `opencode` in the same way.
+Its provider and model names (`copilot-probe`, `envonly`) are invented and live
+only in the test: they pin how the answer is laid out and which providers are
+left out, independent of whatever this machine happens to have connected.
 
 ## Sending a change
 
