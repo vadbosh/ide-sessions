@@ -573,10 +573,11 @@ for prov in skipped:
 '
   echo
   if [ -n "$SUM_MODEL" ]; then
-    echo "--sum uses now: $SUM_MODEL (from --sum-model or IDE_SESSIONS_SUM_MODEL)"
+    echo "Model for --sum now: $SUM_MODEL   (set by --sum-model or IDE_SESSIONS_SUM_MODEL)"
   else
-    echo "--sum uses without --sum-model: the model opencode itself is set to (config, then last used)"
+    echo "Model for --sum by default: the one opencode itself is set to (config, then last used)"
   fi
+  echo "To pick another:  opencode-sessions --sum <ID> --sum-model <provider/model above>"
 }
 
 if [ "$LIST_MODELS" = 1 ]; then

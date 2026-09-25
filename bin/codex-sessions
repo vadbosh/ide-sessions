@@ -494,12 +494,13 @@ if hidden:
     for x in hidden:
         row(x)
 print()
-print('--sum uses without --sum-model: %s — the model config.toml sets, with reasoning set to low'
+print('Model for --sum by default: %s   (the model config.toml sets; reasoning set to low)'
       % (current or 'the model Codex is set to'))
 PY
   if [ -n "$SUM_MODEL" ]; then
-    echo "--sum uses now: $SUM_MODEL (from --sum-model or IDE_SESSIONS_SUM_MODEL)"
+    echo "Model for --sum now: $SUM_MODEL   (set by --sum-model or IDE_SESSIONS_SUM_MODEL)"
   fi
+  echo "To pick another:  codex-sessions --sum <ID> --sum-model <a slug above>"
 }
 
 if [ "$LIST_MODELS" = 1 ]; then

@@ -810,7 +810,7 @@ printf '%s\n' '{"type":"assistant","timestamp":"2026-03-04T10:00:00.000Z","messa
 out="$("$ROOT/bin/claude-sessions" --list-models 2>&1)"
 contains "claude --list-models: the aliases"            "$out" "haiku        fast and efficient"
 contains "claude --list-models: names the account ran"  "$out" "claude-probe-9"
-contains "claude --list-models: the default, no catalogue" "$out" "--sum uses without --sum-model: haiku"
+contains "claude --list-models: the default, no catalogue" "$out" "Model for --sum by default: haiku"
 contains "claude --list-model is the same flag"         "$("$ROOT/bin/claude-sessions" --list-model 2>&1)" "Aliases"
 
 cat > "$CODEX_HOME/models_cache.json" <<'JSON'
@@ -822,7 +822,7 @@ printf 'model = "gpt-probe-sol"\n' > "$CODEX_HOME/config.toml"
 out="$("$ROOT/bin/codex-sessions" --list-models 2>&1)"
 contains "codex --list-models: the slug and its name"   "$out" "gpt-probe-sol            GPT-Probe-Sol  ← config.toml"
 contains "codex --list-models: hidden ones apart"       "$out" "In the catalogue, hidden from the Codex picker"
-contains "codex --list-models: the default"             "$out" "--sum uses without --sum-model: gpt-probe-sol"
+contains "codex --list-models: the default"             "$out" "Model for --sum by default: gpt-probe-sol"
 
 # opencode lists its own models; a stub stands in for it, with one provider
 # connected through auth.json and one only through an environment variable.

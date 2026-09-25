@@ -540,11 +540,14 @@ for n, t in sorted(seen.items(), key=lambda kv: kv[1], reverse=True):
 PY
   echo
   if [ -n "$SUM_MODEL" ]; then
-    echo "--sum uses now: $SUM_MODEL (from --sum-model or IDE_SESSIONS_SUM_MODEL)"
+    echo "Model for --sum now: $SUM_MODEL   (set by --sum-model or IDE_SESSIONS_SUM_MODEL)"
   else
-    echo "--sum uses without --sum-model: $(sum_pick_model) — the cheapest priced Anthropic model"
-    echo "  in a models.dev catalogue on disk, or the alias haiku when there is none"
+    echo "Model for --sum by default: $(sum_pick_model)"
+    echo "  (the cheapest priced Anthropic model in a models.dev catalogue on disk,"
+    echo "   or the alias haiku when there is none)"
   fi
+  echo "To pick another:  claude-sessions --sum <ID> --sum-model <a name above>"
+  echo "  e.g.            claude-sessions --sum <ID> --sum-model sonnet"
 }
 
 if [ "$LIST_MODELS" = 1 ]; then
