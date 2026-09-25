@@ -143,6 +143,45 @@ in, taking the one the user typed most where several were used. The two are cach
 separately, so a session can hold an English summary for a colleague and a
 Russian one for whoever ran it, and neither overwrites the other.
 
+**Choosing the model.** `--list-models` prints the exact names `--sum-model`
+accepts in that IDE, and which model `--sum` uses when none is given:
+
+```bash
+claude-sessions   --list-models            # aliases + full names this account has run
+codex-sessions    --list-models            # Codex's catalogue, picker models first
+opencode-sessions --list-models            # connected providers, as provider/model
+opencode-sessions --list-models github-copilot   # one provider only
+```
+
+```
+$ claude-sessions --list-models
+Models --sum-model accepts — passed to `claude -p --model`
+
+Aliases — Claude Code maps each to the current model of that family
+  haiku        fast and efficient, for simple tasks
+  sonnet       the latest Sonnet, for daily coding
+  ...
+Full names this account has run — from its transcripts, newest first
+  claude-opus-5-5                    last used 2026-09-25
+  claude-haiku-4-5-20251001          last used 2026-09-25
+  ...
+Model for --sum by default: claude-haiku-4-5
+To pick another:  claude-sessions --sum <ID> --sum-model <a name above>
+```
+
+Then pass one of those names, separated by a space:
+
+```bash
+claude-sessions   --sum <ID>      --sum-model claude-haiku-4-5
+claude-sessions   --sum-orig <ID> --sum-model sonnet
+codex-sessions    --sum <ID>      --sum-model gpt-6-luna
+opencode-sessions --sum <ID>      --sum-model github-copilot/claude-haiku-4.5
+```
+
+The names above are from one machine; `--list-models` shows yours. What each
+command lists, and why an API key sitting in the environment does not count as
+a connected opencode provider, is under [Which model](#which-model).
+
 The same session, summarized by each command over its own IDE's storage — this
 one was held in Russian:
 

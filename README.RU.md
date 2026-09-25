@@ -142,6 +142,45 @@ claude-sessions --list-models              # какие имена примет 
 раздельно, поэтому у одной сессии могут лежать английская сводка для коллеги и
 русская для себя, и одна не затирает другую.
 
+**Как выбрать модель.** `--list-models` печатает точные имена, которые примет
+`--sum-model` в этой IDE, и модель, которую `--sum` возьмёт без флага:
+
+```bash
+claude-sessions   --list-models            # алиасы + полные имена, на которых работал аккаунт
+codex-sessions    --list-models            # каталог Codex, сначала модели из меню выбора
+opencode-sessions --list-models            # подключённые провайдеры, в виде provider/model
+opencode-sessions --list-models github-copilot   # только один провайдер
+```
+
+```
+$ claude-sessions --list-models
+Models --sum-model accepts — passed to `claude -p --model`
+
+Aliases — Claude Code maps each to the current model of that family
+  haiku        fast and efficient, for simple tasks
+  sonnet       the latest Sonnet, for daily coding
+  ...
+Full names this account has run — from its transcripts, newest first
+  claude-opus-5-5                    last used 2026-09-25
+  claude-haiku-4-5-20251001          last used 2026-09-25
+  ...
+Model for --sum by default: claude-haiku-4-5
+To pick another:  claude-sessions --sum <ID> --sum-model <a name above>
+```
+
+Дальше одно из этих имён передаётся через пробел:
+
+```bash
+claude-sessions   --sum <ID>      --sum-model claude-haiku-4-5
+claude-sessions   --sum-orig <ID> --sum-model sonnet
+codex-sessions    --sum <ID>      --sum-model gpt-6-luna
+opencode-sessions --sum <ID>      --sum-model github-copilot/claude-haiku-4.5
+```
+
+Имена выше взяты с одной машины; `--list-models` покажет ваши. Что именно
+выводит каждая команда и почему API-ключ в окружении не считается подключённым
+провайдером opencode — в разделе [Какая модель](#какая-модель).
+
 Та же сессия глазами каждой команды — эта шла по-русски:
 
 ```
