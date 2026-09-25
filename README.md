@@ -135,6 +135,7 @@ claude-sessions --sum-orig <ID>            # in the session's own language
 claude-sessions --sum <ID> --sum-gap 90    # 90 min of silence starts a new topic
 claude-sessions --sum <ID> --sum-refresh   # ignore the cache, ask again
 claude-sessions --sum <ID> --sum-model X   # summarize with a specific model
+claude-sessions --list-models              # the names --sum-model accepts, and the default
 ```
 
 `--sum-orig <ID>` writes the summary in the language the session was held
@@ -388,6 +389,23 @@ second look free.
 No model name or version is pinned in these scripts — a pinned name is wrong by
 the next release. `--sum` and `--sum-orig` resolve it identically; the language
 of the answer has no bearing on which model writes it.
+
+`--list-models` prints the names `--sum-model` accepts, each from where its IDE
+keeps them, and which model `--sum` would use without the flag:
+
+- `claude-sessions` — Claude Code has no command that lists models, so: the
+  aliases it documents (`haiku`, `sonnet`, `opus`, `fable`, `best`, `opus[1m]`,
+  `sonnet[1m]`), and the full names this account has actually run, read from
+  its transcripts, newest first.
+- `codex-sessions` — the catalogue Codex keeps in `~/.codex/models_cache.json`:
+  each slug with its name, the ones offered in Codex's model picker first, and
+  the one `config.toml` sets marked.
+- `opencode-sessions` — `opencode models`, grouped by provider, with how each
+  provider is connected. Only providers connected through `opencode auth login`
+  and opencode's built-in one are listed: a provider reachable only because an
+  API key sits in the environment is named in one line and left out, since the
+  variable proves nothing about the key. `--list-models <provider>` shows one
+  provider, that kind included.
 
 **`claude-sessions`**, in order, first hit wins:
 

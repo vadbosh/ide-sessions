@@ -799,6 +799,52 @@ contains "billing --help needs no ccusage"     "$out" "ONE SESSION"
 out="$(bill dates; echo "EXIT=$?")"
 contains "billing: a removed view names its replacement" "$out" "billing --id ID"
 
+# ── --list-models ───────────────────────────────────────────────────────────
+# What --sum-model accepts, from where each IDE keeps it. Built last, so no
+# session added here changes a count an earlier test depends on.
+echo "--list-models"
+
+mkdir -p "$CLAUDE_DIR/projects/-models-probe"
+printf '%s\n' '{"type":"assistant","timestamp":"2026-03-04T10:00:00.000Z","message":{"model":"claude-probe-9","content":[]}}' \
+    > "$CLAUDE_DIR/projects/-models-probe/99999999-0000-4000-8000-000000000099.jsonl"
+out="$("$ROOT/bin/claude-sessions" --list-models 2>&1)"
+contains "claude --list-models: the aliases"            "$out" "haiku        fast and efficient"
+contains "claude --list-models: names the account ran"  "$out" "claude-probe-9"
+contains "claude --list-models: the default, no catalogue" "$out" "--sum uses without --sum-model: haiku"
+contains "claude --list-model is the same flag"         "$("$ROOT/bin/claude-sessions" --list-model 2>&1)" "Aliases"
+
+cat > "$CODEX_HOME/models_cache.json" <<'JSON'
+{"fetched_at": "2026-03-04T10:00:00Z", "models": [
+  {"slug": "gpt-probe-sol", "display_name": "GPT-Probe-Sol", "visibility": "list"},
+  {"slug": "gpt-probe-hidden", "display_name": "GPT-Probe-Hidden", "visibility": "hide"}]}
+JSON
+printf 'model = "gpt-probe-sol"\n' > "$CODEX_HOME/config.toml"
+out="$("$ROOT/bin/codex-sessions" --list-models 2>&1)"
+contains "codex --list-models: the slug and its name"   "$out" "gpt-probe-sol            GPT-Probe-Sol  ← config.toml"
+contains "codex --list-models: hidden ones apart"       "$out" "In the catalogue, hidden from the Codex picker"
+contains "codex --list-models: the default"             "$out" "--sum uses without --sum-model: gpt-probe-sol"
+
+# opencode lists its own models; a stub stands in for it, with one provider
+# connected through auth.json and one only through an environment variable.
+mkdir -p "$TMP/stub-models"
+cat > "$TMP/stub-models/opencode" <<'SH'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "models ") printf '%s\n' copilot-probe/model-a copilot-probe/model-b envonly/model-x opencode/free-1 ;;
+  "models envonly") printf '%s\n' envonly/model-x ;;
+  "auth list") printf '%s\n' '┌  Credentials' '●  Copilot Probe oauth' '└  1 credentials' \
+                              '┌  Environment' '●  Envonly ENVONLY_API_KEY' '└  1 environment variable' ;;
+esac
+SH
+chmod +x "$TMP/stub-models/opencode"
+out="$(PATH="$TMP/stub-models:$PATH" "$ROOT/bin/opencode-sessions" --list-models 2>&1)"
+contains "opencode --list-models: a connected provider" "$out" "copilot-probe — 2 model(s) · credential in auth.json (oauth)"
+contains "opencode --list-models: the built-in one"     "$out" "opencode — 1 model(s) · built into opencode"
+absent   "opencode --list-models: an env-only key is not a provider" "$out" "  envonly/model-x"
+contains "opencode --list-models: but says it left one out" "$out" "not listed: envonly — 1 model(s)"
+out="$(PATH="$TMP/stub-models:$PATH" "$ROOT/bin/opencode-sessions" --list-models envonly 2>&1)"
+contains "opencode --list-models P: asked by name, shown" "$out" "  envonly/model-x"
+
 # ── report ──────────────────────────────────────────────────────────────────
 echo
 echo "$PASS passed, $FAIL failed"

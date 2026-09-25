@@ -43,6 +43,8 @@ APPLY=0
 ASSUME_YES=0
 DRY_RUN=0
 SUM_ID=""
+LIST_MODELS=0
+LIST_PROVIDER=""
 SUM_MODEL="${IDE_SESSIONS_SUM_MODEL:-}"
 SUM_GAP=45
 SUM_REFRESH=0
@@ -69,6 +71,8 @@ Usage: opencode-sessions [-n LIMIT] [-f] [-p] [substring]
 Summary of one session, grouped by topic (English unless --sum-orig):
   --sum ID          summarize that session; the result is cached per session
   --sum-model M     model to summarize with (default: the one opencode uses)
+  --list-models [P] the names --sum-model accepts, from connected providers;
+                    P shows one provider only (e.g. github-copilot)
   --sum-gap MIN     minutes of silence that start a new topic (default: 45)
   --sum-refresh     ignore the cached summary and ask the model again
   --sum-raw         print the extracted digest only — no model call, no cost
@@ -114,6 +118,8 @@ while [ $# -gt 0 ]; do
     --everywhere) EVERYWHERE=1; shift ;;
     --sum) SUM_ID="$2"; shift 2 ;;
     --sum-model) SUM_MODEL="$2"; shift 2 ;;
+    --list-models|--list-model) LIST_MODELS=1; shift
+      case "${1:-}" in ""|-*) ;; *) LIST_PROVIDER="$1"; shift ;; esac ;;
     --sum-gap) SUM_GAP="$2"; shift 2 ;;
     --sum-refresh) SUM_REFRESH=1; shift ;;
     --sum-raw) SUM_RAW=1; shift ;;
@@ -503,6 +509,80 @@ sum_progress_stop() {
 # An interrupted run must not leave the counter running in the background.
 trap 'sum_progress_stop' EXIT INT TERM
 
+
+# ── --list-models ───────────────────────────────────────────────────────────
+# `opencode models` lists the models of the providers this machine has
+# connected — a credential in auth.json, a key in the environment, or opencode's
+# own built-in provider — in the provider/model form `opencode run --model`
+# takes. `opencode auth list` says how each one is connected. Grouped here by
+# provider, because one gateway alone can bring hundreds; a provider name after
+# the flag shows that one only.
+list_models() {
+  command -v opencode >/dev/null 2>&1 || {
+    echo "opencode CLI not found — it is what lists the models it can reach." >&2
+    exit 1
+  }
+  local models auth
+  models="$(opencode models ${LIST_PROVIDER:+"$LIST_PROVIDER"} 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | grep '/' || true)"
+  auth="$(opencode auth list 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' || true)"
+  echo "Models --sum-model accepts — passed to \`opencode run --model\` as provider/model"
+  echo "Providers connected with \`opencode auth login\`, and opencode's own built-in one."
+  if [ -z "$models" ]; then
+    echo
+    echo "  No models${LIST_PROVIDER:+ for provider $LIST_PROVIDER}."
+    exit 0
+  fi
+  # A provider that is reachable only because an API key happens to be in the
+  # environment is left out unless asked for by name: opencode lists it all the
+  # same, and on this machine one such key brought 386 models that did not
+  # answer. A variable in the environment proves nothing about the key in it.
+  printf '%s\n' "$models" | MODELS_AUTH="$auth" MODELS_ASKED="$LIST_PROVIDER" python3 -c '
+import os, re, sys
+auth = os.environ.get("MODELS_AUTH", "")
+asked = os.environ.get("MODELS_ASKED", "")
+how, from_env = {}, set()
+section = ""
+for line in auth.splitlines():
+    if "Credentials" in line: section = "credential in auth.json"
+    elif "Environment" in line: section = "environment variable"
+    m = re.match(r"^\W*●\s+(.+?)\s+(\S+)\s*$", line)
+    if m:
+        pid = m.group(1).strip().lower().replace(" ", "-")
+        how[pid] = "%s (%s)" % (section or "connected", m.group(2))
+        if section == "environment variable":
+            from_env.add(pid)
+groups = {}
+for line in sys.stdin:
+    line = line.strip()
+    if "/" in line:
+        groups.setdefault(line.split("/", 1)[0], []).append(line)
+skipped = []
+for prov in sorted(groups):
+    if prov in from_env and prov != asked:
+        skipped.append(prov)
+        continue
+    note = how.get(prov) or ("built into opencode, no key needed" if prov == "opencode" else "connected")
+    print("\n%s — %d model(s) · %s" % (prov, len(groups[prov]), note))
+    for m in groups[prov]:
+        print("  " + m)
+for prov in skipped:
+    print("\nnot listed: %s — %d model(s), through an %s only"
+          % (prov, len(groups[prov]), how[prov]))
+    print("  A key in the environment is not a connected provider. To see them anyway:")
+    print("  --list-models %s" % prov)
+'
+  echo
+  if [ -n "$SUM_MODEL" ]; then
+    echo "--sum uses now: $SUM_MODEL (from --sum-model or IDE_SESSIONS_SUM_MODEL)"
+  else
+    echo "--sum uses without --sum-model: the model opencode itself is set to (config, then last used)"
+  fi
+}
+
+if [ "$LIST_MODELS" = 1 ]; then
+  list_models
+  exit 0
+fi
 if [ -n "$SUM_ID" ]; then
   sum_fail() {
     case $1 in

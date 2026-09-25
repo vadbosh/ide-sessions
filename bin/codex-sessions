@@ -38,6 +38,7 @@ APPLY=0
 ASSUME_YES=0
 DRY_RUN=0
 SUM_ID=""
+LIST_MODELS=0
 SUM_MODEL="${IDE_SESSIONS_SUM_MODEL:-}"
 SUM_GAP=45
 SUM_REFRESH=0
@@ -61,6 +62,7 @@ Usage: codex-sessions [-n LIMIT] [-f] [-p] [substring]
 Summary of one session, grouped by topic (English unless --sum-orig):
   --sum ID          summarize that session; the result is cached per rollout
   --sum-model M     model to summarize with (default: the one Codex is set to)
+  --list-models     the names --sum-model accepts, and the one --sum uses by default
   --sum-gap MIN     minutes of silence that start a new topic (default: 45)
   --sum-refresh     ignore the cached summary and ask the model again
   --sum-raw         print the extracted digest only — no model call, no cost
@@ -104,6 +106,7 @@ while [ $# -gt 0 ]; do
     --everywhere) EVERYWHERE=1; shift ;;
     --sum) SUM_ID="$2"; shift 2 ;;
     --sum-model) SUM_MODEL="$2"; shift 2 ;;
+    --list-models|--list-model) LIST_MODELS=1; shift ;;
     --sum-gap) SUM_GAP="$2"; shift 2 ;;
     --sum-refresh) SUM_REFRESH=1; shift ;;
     --sum-raw) SUM_RAW=1; shift ;;
@@ -452,6 +455,57 @@ sum_progress_stop() {
 # An interrupted run must not leave the counter running in the background.
 trap 'sum_progress_stop' EXIT INT TERM
 
+
+# ── --list-models ───────────────────────────────────────────────────────────
+# Codex keeps the catalogue its server offers this account in
+# $CODEX_HOME/models_cache.json (`codex debug models` prints the same). A model
+# is named by its slug, which is what `codex exec -m` takes. `visibility: list`
+# means Codex offers it in its own model picker; hidden ones exist but are not
+# offered there.
+list_models() {
+  echo "Models --sum-model accepts — passed to \`codex exec -m\`"
+  python3 - "$CODEX_HOME/models_cache.json" "$CODEX_HOME/config.toml" <<'PY'
+import json, re, sys
+cache, config = sys.argv[1], sys.argv[2]
+try:
+    db = json.load(open(cache))
+except (OSError, ValueError):
+    print("\n  No catalogue at %s yet — run Codex once, or `codex debug models`." % cache)
+    sys.exit(0)
+current = ''
+try:
+    m = re.search(r'(?m)^\s*model\s*=\s*"([^"]+)"', open(config).read())
+    current = m.group(1) if m else ''
+except OSError:
+    pass
+print("from %s, fetched %s\n" % (cache, (db.get('fetched_at') or '?')[:16].replace('T', ' ')))
+models = db.get('models') or []
+shown = [x for x in models if x.get('visibility') == 'list']
+hidden = [x for x in models if x.get('visibility') != 'list']
+def row(x):
+    slug = x.get('slug') or '?'
+    mark = '  ← config.toml' if slug == current else ''
+    print('  %-24s %s%s' % (slug, x.get('display_name') or '', mark))
+print('Offered in the Codex model picker')
+for x in shown:
+    row(x)
+if hidden:
+    print('\nIn the catalogue, hidden from the Codex picker')
+    for x in hidden:
+        row(x)
+print()
+print('--sum uses without --sum-model: %s — the model config.toml sets, with reasoning set to low'
+      % (current or 'the model Codex is set to'))
+PY
+  if [ -n "$SUM_MODEL" ]; then
+    echo "--sum uses now: $SUM_MODEL (from --sum-model or IDE_SESSIONS_SUM_MODEL)"
+  fi
+}
+
+if [ "$LIST_MODELS" = 1 ]; then
+  list_models
+  exit 0
+fi
 if [ -n "$SUM_ID" ]; then
   rollout=$(find "$SESSIONS_DIR" -name "rollout-*$SUM_ID.jsonl" -print -quit 2>/dev/null || true)
   if [ -z "$rollout" ]; then

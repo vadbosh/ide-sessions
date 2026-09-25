@@ -51,6 +51,7 @@ APPLY=0
 ASSUME_YES=0
 DRY_RUN=0
 SUM_ID=""
+LIST_MODELS=0
 SUM_MODEL="${IDE_SESSIONS_SUM_MODEL:-}"
 SUM_GAP=45
 SUM_REFRESH=0
@@ -74,6 +75,7 @@ Usage: claude-sessions [-n LIMIT] [-f] [-p] [substring]
 Summary of one session, grouped by topic (English unless --sum-orig):
   --sum ID          summarize that session; the result is cached per transcript
   --sum-model M     model to summarize with (default: cheapest one available)
+  --list-models     the names --sum-model accepts, and the one --sum uses by default
   --sum-gap MIN     minutes of silence that start a new topic (default: 45)
   --sum-refresh     ignore the cached summary and ask the model again
   --sum-raw         print the extracted digest only — no model call, no cost
@@ -120,6 +122,7 @@ while [ $# -gt 0 ]; do
     --everywhere) EVERYWHERE=1; shift ;;
     --sum) SUM_ID="$2"; shift 2 ;;
     --sum-model) SUM_MODEL="$2"; shift 2 ;;
+    --list-models|--list-model) LIST_MODELS=1; shift ;;
     --sum-gap) SUM_GAP="$2"; shift 2 ;;
     --sum-refresh) SUM_REFRESH=1; shift ;;
     --sum-raw) SUM_RAW=1; shift ;;
@@ -492,6 +495,62 @@ sum_progress_stop() {
 # An interrupted run must not leave the counter running in the background.
 trap 'sum_progress_stop' EXIT INT TERM
 
+
+# ── --list-models ───────────────────────────────────────────────────────────
+# Claude Code has no command that lists models, so the list is built from the
+# two sources that are certain to be accepted by `claude -p --model`: the
+# aliases Claude Code documents (code.claude.com/docs/en/model-config), and the
+# full names this account has actually run, read from its own transcripts.
+list_models() {
+  echo "Models --sum-model accepts — passed to \`claude -p --model\`"
+  echo
+  echo "Aliases — Claude Code maps each to the current model of that family"
+  printf '  %-12s %s\n' \
+    haiku      "fast and efficient, for simple tasks" \
+    sonnet     "the latest Sonnet, for daily coding" \
+    opus       "the latest Opus, for complex reasoning" \
+    fable      "Fable, for the hardest and longest-running tasks" \
+    best       "fable where it is available to you, otherwise opus" \
+    'opus[1m]'   "opus with a 1M-token context window" \
+    'sonnet[1m]' "sonnet with a 1M-token context window"
+  echo
+  echo "Full names this account has run — from its transcripts, newest first"
+  python3 - "$CONFIG_DIR/projects" <<'PY'
+import os, re, sys, glob, datetime
+root = sys.argv[1]
+files = glob.glob(os.path.join(root, '*', '*.jsonl'))
+files.sort(key=lambda f: os.path.getmtime(f), reverse=True)
+seen = {}
+pat = re.compile(rb'"model":"(claude-[A-Za-z0-9.\-]+)"')
+for f in files:
+    try:
+        with open(f, 'rb') as fh:
+            names = set(pat.findall(fh.read()))
+    except OSError:
+        continue
+    for n in names:
+        n = n.decode()
+        if n not in seen:
+            seen[n] = os.path.getmtime(f)
+if not seen:
+    print('  (none found under %s)' % root)
+for n, t in sorted(seen.items(), key=lambda kv: kv[1], reverse=True):
+    day = datetime.datetime.fromtimestamp(t).strftime('%Y-%m-%d')
+    print('  %-34s last used %s' % (n, day))
+PY
+  echo
+  if [ -n "$SUM_MODEL" ]; then
+    echo "--sum uses now: $SUM_MODEL (from --sum-model or IDE_SESSIONS_SUM_MODEL)"
+  else
+    echo "--sum uses without --sum-model: $(sum_pick_model) — the cheapest priced Anthropic model"
+    echo "  in a models.dev catalogue on disk, or the alias haiku when there is none"
+  fi
+}
+
+if [ "$LIST_MODELS" = 1 ]; then
+  list_models
+  exit 0
+fi
 if [ -n "$SUM_ID" ]; then
   transcript=$(find "$PROJECTS_DIR" -maxdepth 2 -name "$SUM_ID.jsonl" -print -quit 2>/dev/null || true)
   if [ -z "$transcript" ]; then

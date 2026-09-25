@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.0
+
+**`--list-models` in all three: the names `--sum-model` accepts.** Choosing a
+model meant knowing its exact name for each CLI. Each command now prints them
+from where its IDE keeps them, and which model `--sum` would use without the
+flag: `claude-sessions` the documented aliases and the full names the account
+has actually run; `codex-sessions` the catalogue in `models_cache.json`, picker
+models first, the configured one marked; `opencode-sessions` `opencode models`
+grouped by provider with how each is connected. A provider reachable only
+through an API key in the environment is named and left out — here one such
+key brought 386 models that did not answer — and `--list-models <provider>`
+shows it on request. `--list-model` works too.
+
 ## 0.8.0
 
 **`billing` says what each table is.** A table of dates under `DAY` read as a
