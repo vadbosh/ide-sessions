@@ -95,6 +95,13 @@ nothing goes until --apply — without it you get the list and a dry-run note.
   opencode-sessions -p                          lists sessions whose directory is $PWD
   opencode-sessions -p --rm-all                 lists what --apply would delete, deletes nothing
 
+  opencode-sessions --sum <ID>                                                   SUMMARIZES the session in English, default model
+  opencode-sessions --sum <ID> --sum-model github-copilot/claude-haiku-4.5       SUMMARIZES it in English with that model
+  opencode-sessions --sum-orig <ID> --sum-model github-copilot/claude-haiku-4.5  SUMMARIZES it in its own language with that model
+  opencode-sessions --sum <ID> --sum-raw                                         prints the digest only — no model call, no cost
+  opencode-sessions --list-models                                                lists the provider/model names --sum-model accepts
+  Each SUMMARIZES is one model call; the result is cached, --sum-refresh asks again.
+
   opencode-sessions -p --rm-all --apply         DELETES every session of this project
   opencode-sessions k8s --rm-all --apply        DELETES every session whose dir matches "k8s"
   opencode-sessions -p --older-than 30 --apply  DELETES this project's sessions untouched for 30+ days
