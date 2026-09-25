@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for the three session tools.
+# Tests for the three session tools and billing.
 #
 #   tests/test_sessions.sh
 #
@@ -633,6 +633,120 @@ contains "--sum-orig takes the id itself" "$out" "### orig heading"
 # …and it must not eat the next flag as an id.
 out="$("$ROOT/bin/claude-sessions" --sum-orig --sum "$SID" --sum-model pinned 2>&1)"
 contains "a flag after --sum-orig stays a flag" "$out" "### orig heading"
+
+# ── billing ─────────────────────────────────────────────────────────────────
+# billing only lays out what ccusage reports, so ccusage is replaced by a stub
+# that prints canned JSON in the shape ccusage 20 writes. What is checked is
+# the layout and the lookup — the numbers are ccusage's business.
+echo "billing"
+
+STUB="$TMP/ccusage-stub"
+mkdir -p "$STUB"
+cat > "$STUB/ccusage" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+  daily|monthly|session) cat "$(dirname "$0")/$1.json" ;;
+  *) exit 1 ;;
+esac
+SH
+chmod +x "$STUB/ccusage"
+
+cat > "$STUB/daily.json" <<'JSON'
+{"daily": [
+  {"period": "2026-03-02", "inputTokens": 300, "outputTokens": 3000,
+   "cacheCreationTokens": 30000, "cacheReadTokens": 966700, "totalTokens": 1000000,
+   "totalCost": 3.0,
+   "agents": [{"agent": "claude", "totalCost": 2.0, "inputTokens": 100, "outputTokens": 2000,
+               "cacheCreationTokens": 30000, "cacheReadTokens": 467900, "totalTokens": 500000},
+              {"agent": "codex", "totalCost": 1.0, "inputTokens": 200, "outputTokens": 1000,
+               "cacheCreationTokens": 0, "cacheReadTokens": 498800, "totalTokens": 500000}]},
+  {"period": "2026-03-01", "inputTokens": 10, "outputTokens": 90,
+   "cacheCreationTokens": 0, "cacheReadTokens": 0, "totalTokens": 100,
+   "totalCost": 0.5,
+   "agents": [{"agent": "opencode", "totalCost": 0.5, "inputTokens": 10, "outputTokens": 90,
+               "cacheCreationTokens": 0, "cacheReadTokens": 0, "totalTokens": 100}]}
+]}
+JSON
+
+cat > "$STUB/monthly.json" <<'JSON'
+{"monthly": [
+  {"period": "2026-03", "inputTokens": 310, "outputTokens": 3090,
+   "cacheCreationTokens": 30000, "cacheReadTokens": 966700, "totalTokens": 1000100,
+   "totalCost": 3.5, "agents": []}
+]}
+JSON
+
+cat > "$STUB/session.json" <<'JSON'
+{"session": [
+  {"agent": "claude", "period": "aa000000-0000-4000-8000-000000000001",
+   "inputTokens": 1234, "outputTokens": 5678, "cacheCreationTokens": 9000,
+   "cacheReadTokens": 1000000, "totalTokens": 1015912, "totalCost": 12.345,
+   "modelsUsed": ["claude-opus-5-5"], "metadata": {"lastActivity": "2026-03-02T10:00:00Z"},
+   "modelBreakdowns": [{"modelName": "claude-opus-5-5", "inputTokens": 1234,
+     "outputTokens": 5678, "cacheCreationTokens": 9000, "cacheReadTokens": 1000000,
+     "cost": 12.345}]},
+  {"agent": "claude", "period": "aa000000-0000-4000-8000-000000000002",
+   "inputTokens": 1, "outputTokens": 1, "cacheCreationTokens": 0, "cacheReadTokens": 0,
+   "totalTokens": 2, "totalCost": 0.01, "modelsUsed": [], "metadata": {},
+   "modelBreakdowns": []},
+  {"agent": "codex",
+   "period": "2026/03/02/rollout-2026-03-02T13-00-00-01a00000-0000-7000-8000-000000000007",
+   "inputTokens": 500, "outputTokens": 50, "cacheCreationTokens": 0, "cacheReadTokens": 450,
+   "totalTokens": 1000, "totalCost": 0.25, "modelsUsed": ["gpt-5.6-sol"],
+   "metadata": {"lastActivity": "2026-03-02T13:05:00Z", "reasoningOutputTokens": 20},
+   "modelBreakdowns": [{"modelName": "gpt-5.6-sol", "inputTokens": 500, "outputTokens": 50,
+     "cacheCreationTokens": 0, "cacheReadTokens": 450, "cost": 0.25}]}
+]}
+JSON
+
+bill() { CCUSAGE_BIN="$STUB/ccusage" "$ROOT/bin/billing" "$@" 2>&1; }
+
+out="$(bill)"
+contains "billing: a column per IDE when no IDE is named" "$out" "claude     codex  opencode"
+contains "billing: periods run oldest first"   "$(printf '%s\n' "$out" | sed -n 2p)" "2026-03-01"
+# TOTAL is also a column header, so the row is looked for where it belongs.
+last="$(printf '%s\n' "$out" | tail -1)"
+contains "billing: the last row is TOTAL"      "$last" 'TOTAL '
+contains "billing: TOTAL adds the costs up"    "$last" '$3.50'
+contains "billing: cache share of the total"   "$out" '97%'
+
+out="$(bill --ide codex)"
+absent   "billing --ide: no per-IDE columns"   "$out" "opencode"
+contains "billing --ide: that IDE's share"     "$out" '$1.00'
+absent   "billing --ide: other IDEs' days go"  "$out" "2026-03-01"
+
+out="$(bill -n 1)"
+contains "billing -n: says what it cut"        "$out" "(last 1 of 2 periods"
+
+out="$(bill month)"
+contains "billing month: monthly rows"         "$out" "2026-03 "
+
+out="$(bill --id aa000000-0000-4000-8000-000000000001)"
+contains "billing --id: the session"           "$out" "Session:       aa000000-0000-4000-8000-000000000001"
+contains "billing --id: a row per model"       "$out" "claude-opus-5-5"
+contains "billing --id: exact counts"          "$out" "1,015,912"
+contains "billing --id: cost to the cent"      "$out" '$12.35'
+
+out="$(bill --id 01a00000-0000-7000)"
+contains "billing --id: a codex uuid finds its transcript path" "$out" "Transcript:    2026/03/02/rollout"
+contains "billing --id: codex reasoning tokens" "$out" "Reasoning:     20 output tokens"
+
+out="$(bill --id aa000000; echo "EXIT=$?")"
+contains "billing --id: an ambiguous prefix lists the candidates" "$out" "matches 2 sessions"
+contains "billing --id: ambiguous is exit 1"   "$out" "EXIT=1"
+
+out="$(bill --id aa000000 --ide codex; echo "EXIT=$?")"
+contains "billing --id --ide: narrows to that IDE" "$out" 'no session matches "aa000000" in codex'
+
+out="$(CCUSAGE_BIN="$TMP/no-such-ccusage" "$ROOT/bin/billing" 2>&1; echo "EXIT=$?")"
+contains "billing without ccusage says how to install it" "$out" "npm install -g ccusage"
+contains "billing without ccusage is exit 127" "$out" "EXIT=127"
+
+out="$(CCUSAGE_BIN="$TMP/no-such-ccusage" "$ROOT/bin/billing" --help 2>&1)"
+contains "billing --help needs no ccusage"     "$out" "ONE SESSION"
+
+out="$(bill dates; echo "EXIT=$?")"
+contains "billing: a removed view names its replacement" "$out" "billing --id ID"
 
 # ── report ──────────────────────────────────────────────────────────────────
 echo

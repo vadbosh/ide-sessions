@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.0
+
+**A fourth command, `billing`: what the sessions cost.** It answers two
+questions — how much per day, week or month across Claude Code, Codex and
+opencode, with a cost column per IDE and a TOTAL row, and what one session
+cost, given the id the session commands show. ccusage does the pricing;
+`billing` picks the view and lays out the table.
+
+It lived outside this repository as a wrapper that had grown one view per
+question and none of them fit: tables with a header only at the top, a Codex
+session named by a twelve-character slice of its transcript path, and every
+filter reachable only after `--`. The views are two now, the filters are its
+own, and a Codex session is found by the uuid `codex-sessions` shows — ccusage
+names it by the path, and the uuid is the path's tail.
+
+Missing ccusage, `billing` says how to install it and exits 127; `--help` works
+without it. `install.sh` installs `billing` with the other three and reports
+whether ccusage and `jq` are present. Tested against a ccusage stub.
+
 ## 0.6.6
 
 **`opencode-sessions` printed the cost as a raw float.** opencode stores it as

@@ -1,7 +1,9 @@
 # ide-sessions
 
 **Three commands that list, summarize and prune the sessions of Claude Code,
-Codex CLI and opencode — including the one you lost track of.**
+Codex CLI and opencode — including the one you lost track of.** A fourth,
+`billing`, shows what they cost: per day, week or month across all three, or
+for one session by its id.
 
 [Русская версия](README.RU.md) · [Changelog](CHANGELOG.md)
 
@@ -70,13 +72,16 @@ by someone who did not run the session.
 ```bash
 git clone <this repo> ide-sessions
 cd ide-sessions
-./install.sh              # copies the three commands into ~/.local/bin
+./install.sh              # copies the four commands into ~/.local/bin
 ./install.sh --dry-run    # see what it would do first
 ```
 
 The installer reports which IDEs it found and which CLIs are available for
-`--sum`. Requires `python3`; nothing else. All three commands can be installed
-on a machine with one IDE — the others just report that they found nothing.
+`--sum`. The three session commands need `python3` and nothing else, and all
+three can be installed on a machine with one IDE — the others just report that
+they found nothing. `billing` also needs [ccusage](https://ccusage.com)
+(`npm install -g ccusage`) and `jq`; the installer says whether they are there,
+and `billing` says how to install them when they are not.
 
 Uninstall: `./install.sh --uninstall`.
 
@@ -152,6 +157,53 @@ $ opencode-sessions --sum-orig ses_fa66c4184ffepvA00VLoagntRt
   отменяет сортировку по имени.
 - Удалён мёртвый alias `lld`, вызывавший отсутствующую команду `lsd`.
 ```
+
+## Cost: `billing`
+
+`billing` answers two questions: how much per day, week or month, and what one
+session cost. It does not price anything itself — [ccusage](https://ccusage.com)
+reads the same local logs the other three commands read and prices them;
+`billing` picks the view and lays out the table.
+
+```bash
+billing                           # last 20 days, all IDEs, cost per IDE
+billing week --since 2026-09-01   # weeks since a date
+billing month --ide codex         # one IDE per month
+billing -n 0                      # every period, not just the last 20
+billing --id <ID>                 # one session: tokens, cache, cost, per model
+billing --id <ID> --ide codex     # when the same prefix exists in two IDEs
+billing live                      # the current 5-hour billing block
+billing --json                    # ccusage's own JSON instead of the table
+```
+
+`<ID>` is the id the session commands show — `claude-sessions`,
+`codex-sessions`, `opencode-sessions` — and a unique prefix is enough. ccusage
+names a Codex session by its transcript path; `billing` matches the uuid at its
+end, so the id from `codex-sessions` works as is. A prefix that fits several
+sessions lists them instead of guessing.
+
+```
+$ billing --id bdc2f598
+  IDE:           claude
+  Session:       bdc2f598-3b6a-4e6f-a648-10ba0f1d4360
+  Models:        claude-opus-5-5
+  Started:       2026-09-11T09:40:02Z
+  Last activity: 2026-09-11T09:59:41.210Z
+
+  MODEL                           INPUT      OUTPUT     CACHE_WR        CACHE_RD           TOTAL CACHE%       COST
+  claude-opus-5-5                   412      96,318      288,051      24,110,907      24,495,688    98%      $9.12
+  TOTAL                             412      96,318      288,051      24,110,907      24,495,688    98%      $9.12
+```
+
+- **CACHE_WR / CACHE_RD** — tokens written to and read from the prompt cache.
+- **TOTAL** — input + output + cache write + cache read.
+- **CACHE%** — cache read as a share of the total: how much of the context was
+  reused rather than paid for again.
+- **COST** — an estimate, tokens times the model's price. On a subscription it
+  is what the same work would cost through the API, not money charged.
+- **The model** is what the API reported for each response, not what the
+  session was started with: a `/model` switch mid-session shows up as a second
+  row.
 
 ## How `--sum` works
 
@@ -361,6 +413,7 @@ summarized with claude-haiku-4-5-20251001
 | `IDE_SESSIONS_TRASH` | `~/.cache/ide-sessions-trash` | where deletes go |
 | `IDE_SESSIONS_MODELS_JSON` | unset | a models.dev catalogue to price against |
 | `IDE_SESSIONS_BIN_DIR` | `~/.local/bin` | where `install.sh` writes |
+| `CCUSAGE_BIN` | `ccusage` | the ccusage binary `billing` runs |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code storage |
 | `CODEX_HOME` | `~/.codex` | Codex storage |
 | `OPENCODE_DATA_DIR` | `~/.local/share/opencode` | opencode storage |
@@ -419,6 +472,10 @@ Each test builds a throwaway storage tree under a temp dir — no test touches
 real transcripts, and none calls a model. What they check is the digest, which
 is the part that can be wrong without anyone noticing: a model will happily
 summarize a digest full of hook noise.
+
+`billing` is tested against a stub in place of ccusage that prints canned JSON
+in the shape ccusage writes: the layout and the session lookup are what can go
+wrong here, and the prices are ccusage's own business.
 
 ## Sending a change
 

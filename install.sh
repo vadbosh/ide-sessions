@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Install the ide-sessions tools — Linux / macOS.
 #
-#   ./install.sh                 install all three commands on PATH
+#   ./install.sh                 install all four commands on PATH
 #   ./install.sh --dry-run       print what would happen, change nothing
 #   ./install.sh --bin-dir D     install into D instead of ~/.local/bin
 #   ./install.sh --uninstall     remove the commands this script installed
 #
-# The three commands are independent: each one reads only its own IDE's
-# storage, so installing all of them on a machine that has one IDE is
-# harmless — the others simply report that they found nothing.
+# The three session commands are independent: each one reads only its own
+# IDE's storage, so installing all of them on a machine that has one IDE is
+# harmless — the others simply report that they found nothing. billing reads
+# all three through ccusage and says how to install it when it is missing.
 #
 # Idempotent: re-running replaces only what changed. A file it overwrites is
 # copied to <file>.bak.<timestamp> ONLY when that content is not already in the
@@ -19,7 +20,7 @@ set -euo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${IDE_SESSIONS_BIN_DIR:-$HOME/.local/bin}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-COMMANDS="claude-sessions codex-sessions opencode-sessions"
+COMMANDS="claude-sessions codex-sessions opencode-sessions billing"
 
 DRY_RUN=0
 UNINSTALL=0
@@ -143,6 +144,16 @@ say "── IDEs found ──"
 [ -f "${OPENCODE_DATA_DIR:-$HOME/.local/share/opencode}/opencode.db" ] \
     && ok   "    opencode-sessions — database found" \
     || warn "    opencode-sessions — no opencode.db, will list nothing"
+
+# billing prices the sessions through ccusage and lays the tables out with jq.
+# Missing either, it installs anyway and says what to install when it runs.
+say "── billing ──"
+command -v "${CCUSAGE_BIN:-ccusage}" >/dev/null 2>&1 \
+    && ok   "    ccusage — $("${CCUSAGE_BIN:-ccusage}" --version 2>/dev/null | head -1)" \
+    || warn "    ccusage — not found: npm install -g ccusage"
+command -v jq >/dev/null 2>&1 \
+    && ok   "    jq      — $(jq --version 2>/dev/null)" \
+    || warn "    jq      — not found: apt install jq (or brew install jq)"
 
 # --sum spends one model call through that IDE's own CLI. Absent CLI, --sum-raw
 # still prints the digest, and that is worth knowing before the first failure.
