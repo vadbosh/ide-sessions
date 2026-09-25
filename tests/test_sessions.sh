@@ -320,7 +320,8 @@ CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
 """)
 base = 1772445600000
 con.execute("INSERT INTO session VALUES (?,?,?,?,?,?,?,?)",
-            (sid, 'prj', None, '/opt/site', 'a session', 0.5, base, base + 9000))
+            (sid, 'prj', None, '/opt/site', 'a session', 0.17838120000000002,
+             base, base + 9000))
 rows = [
     ('msg1', 'user', base, [{'type': 'text', 'text': 'разбери падение тестов'}]),
     ('msg2', 'assistant', base + 1000,
@@ -343,6 +344,10 @@ contains "names the directory"  "$out" "/opt/site"
 
 out="$("$ROOT/bin/opencode-sessions" -n 5 2>&1)"
 contains "lists without the sqlite3 CLI" "$out" "$OCSID"
+# opencode stores cost as a REAL, and the raw float once went straight into the
+# COST column — $0.17838120000000002 — pushing every column after it out of line.
+contains "cost is rounded to cents"      "$out" '$0.18 '
+absent   "cost is not the raw float"     "$out" '0.1783812'
 
 out=$(cd "$EMPTY" && "$ROOT/bin/opencode-sessions" -p 2>&1)
 contains "opencode: -p in a foreign directory names the scope" "$out" "No sessions bound to"

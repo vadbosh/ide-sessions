@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.6
+
+**`opencode-sessions` printed the cost as a raw float.** opencode stores it as
+a REAL, and the value went straight into the COST column —
+`$0.17838120000000002` — pushing every column after it out of line. It is
+rounded to cents in the query now, `$0.18`, in the listing and in the `--rm`
+preview alike. A test pins it with that very value.
+
 ## 0.6.5
 
 **`claude-sessions -p` printed nothing at all in a directory that never hosted

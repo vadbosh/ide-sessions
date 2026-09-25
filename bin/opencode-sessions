@@ -609,7 +609,7 @@ fi
 rows=$(db_tsv "
 SELECT s.id, s.directory, s.time_updated,
        (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id) AS msgs,
-       s.cost
+       printf('%.2f', COALESCE(s.cost, 0))
 FROM session s
 WHERE s.directory IS NOT NULL AND s.directory != ''
 ORDER BY s.time_updated DESC;
@@ -696,7 +696,7 @@ PY
   db_tsv "
     SELECT s.id, s.directory, s.time_updated,
            (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id),
-           s.cost,
+           printf('%.2f', COALESCE(s.cost, 0)),
            CASE WHEN s.parent_id IS NULL OR s.parent_id = '' THEN '' ELSE 'child' END
     FROM session s WHERE s.id IN ($in_list)
     ORDER BY s.time_updated DESC;" |
