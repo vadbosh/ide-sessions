@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 #
-# billing.sh — token usage and cost of Claude Code, Codex and OpenCode.
+# billing — token usage and cost of Claude Code, Codex and opencode.
 # A wrapper over ccusage (https://ccusage.com): ccusage reads the local logs
 # and prices them; this script only picks the view and lays out the table.
 #
-# Two questions, two shapes:
-#   how much per day / week / month   -> one row per period, all IDEs or one
+# Three questions, three shapes:
+#   how much per day / week / month   -> days | weeks | months, one row each
 #   what did this one session cost    -> --id, the id the *-sessions tools show
+#   where each IDE stands on its limits -> block
 #
+# Every table opens with a line that says what it is: which period, which
+# IDEs, and that periods with no usage are not listed. A bare table of dates
+# read as a data dump; `billing week` read as "one week".
 set -euo pipefail
 
 CCUSAGE_BIN="${CCUSAGE_BIN:-ccusage}"
@@ -15,16 +19,31 @@ IDES="claude codex opencode"
 
 usage() {
   cat <<'EOF'
-billing — token usage and cost across Claude Code, Codex and OpenCode (ccusage)
+billing — token usage and cost across Claude Code, Codex and opencode (ccusage)
 
-PERIOD TOTALS  (one row per period, newest last)
-  billing [day|week|month]          totals per period                 (default: day)
-  billing live                      current 5-hour billing block, with projection
+TOTALS PER PERIOD  (one row per period, oldest first, newest last)
+  billing days                      per day                        (the default)
+  billing weeks                     per week, Monday to Sunday
+  billing months                    per calendar month
+  billing today                     one row: today
+  Only periods with usage are listed: a day nobody worked is not a row.
 
 ONE SESSION
   billing --id ID                   tokens, cache and cost of one session, per model
-                                    ID = the id claude-/codex-/opencode-sessions show;
-                                    a unique prefix is enough
+                                    ID = the id claude-sessions, codex-sessions or
+                                    opencode-sessions show; a unique prefix is enough.
+                                    The IDE is found from the id.
+
+USAGE LIMITS
+  billing block                     where each IDE stands against its limits now:
+                                    Claude Code — the open 5-hour window (it opens with
+                                      the first message): spent, rate, where the rate
+                                      leads by its end;
+                                    Codex — used % of its windows (weekly, 5-hour) and
+                                      when they reset, as its server reported them with
+                                      the last Codex message;
+                                    opencode — keeps no limit data locally.
+                                    --ide shows one of them.
 
 FILTERS
   --ide claude|codex|opencode       one IDE only                      (default: all)
@@ -33,12 +52,17 @@ FILTERS
   -n N                              last N periods; 0 = all           (default: 20)
   --json                            ccusage's own JSON instead of the table
 
-EXAMPLES
-  billing                           last 20 days, all IDEs, cost per IDE
-  billing month --ide codex         Codex per month
-  billing week --since 2026-09-01   weeks since September
-  billing --id 84283b1c             one Claude Code session
-  billing --id 01a0b455 --ide codex one Codex session
+EXAMPLES  (the same form for every IDE)
+  billing days                      last 20 days with usage, all IDEs, cost per IDE
+  billing days --ide claude         the same, Claude Code only
+  billing weeks --ide codex         Codex, per week
+  billing months --ide opencode     opencode, per month
+  billing weeks --since 2026-09-01  all IDEs, weeks from 1 September
+  billing days -n 0                 every day with usage, not just the last 20
+  billing --id 84283b1c             a Claude Code session
+  billing --id 01a0b455             a Codex session
+  billing --id ses_f4ba6fcd         an opencode session
+  --ide with --id only narrows a prefix that sessions of two IDEs share.
 
 COLUMNS
   CACHE_WR / CACHE_RD   tokens written to / read from the prompt cache
@@ -46,6 +70,7 @@ COLUMNS
   CACHE%                cache read / total — how much of the context was reused
   COST                  estimate: tokens x model price. On a subscription it is the
                         API-equivalent, not money charged
+  claude / codex / opencode   that IDE's share of COST (shown when no --ide)
 
 Needs ccusage (npm i -g ccusage; another binary via CCUSAGE_BIN) and jq.
 EOF
@@ -57,10 +82,20 @@ need() {
   command -v "$1" >/dev/null 2>&1 || die "$1 not found. $2" 127
 }
 
+ide_name() {
+  case "$1" in
+    claude) echo "Claude Code" ;;
+    codex) echo "Codex" ;;
+    opencode) echo "opencode" ;;
+    *) echo "all IDEs" ;;
+  esac
+}
+
 # ── arguments ────────────────────────────────────────────────────────────────
 
 mode="period"
 period="day"
+today=0
 ide=""
 sid=""
 since=""
@@ -71,10 +106,11 @@ json=0
 while [ $# -gt 0 ]; do
   case "$1" in
     -h | --help | help) usage; exit 0 ;;
-    day | daily | today) period="day" ;;
-    week | weekly) period="week" ;;
-    month | monthly) period="month" ;;
-    live) mode="live" ;;
+    days | day | daily) period="day" ;;
+    weeks | week | weekly) period="week" ;;
+    months | month | monthly) period="month" ;;
+    today) period="day"; today=1 ;;
+    block | live) mode="block" ;;
     --id) [ $# -ge 2 ] || die "--id needs a session id"; mode="session"; sid="$2"; shift ;;
     --ide) [ $# -ge 2 ] || die "--ide needs claude, codex or opencode"; ide="$2"; shift ;;
     --since) [ $# -ge 2 ] || die "--since needs a date"; since="$2"; shift ;;
@@ -101,7 +137,7 @@ if ! command -v "$CCUSAGE_BIN" >/dev/null 2>&1; then
   cat >&2 <<EOF
 billing: ccusage not found (looked for "$CCUSAGE_BIN").
 
-ccusage reads the local logs of Claude Code, Codex and OpenCode and prices
+ccusage reads the local logs of Claude Code, Codex and opencode and prices
 them; billing only lays out its output. Install it with npm (Node.js):
 
   npm install -g ccusage        # then check: ccusage --version
@@ -113,24 +149,132 @@ EOF
 fi
 need jq "Install it: apt install jq (or your package manager)."
 
+if [ "$today" = 1 ]; then
+  since="$(date +%F)"; until_d="$since"
+fi
 range=()
 [ -n "$since" ] && range+=(--since "$since")
 [ -n "$until_d" ] && range+=(--until "$until_d")
 
-# ── live: the active 5-hour block, as ccusage draws it ───────────────────────
+# ── block: where each IDE stands against its usage limits ───────────────────
+# The IDEs keep this in different places, and only one of them through ccusage:
+#   Claude Code  5-hour windows; ccusage rebuilds the open one from the logs.
+#   Codex        the limits its server reported with every response, logged in
+#                the rollout as token_count → rate_limits (used %, window
+#                length, reset time). The newest one is as of Codex's last
+#                message, and says so — nothing refreshes it in between.
+#   opencode     no limit data in its local store.
 
-if [ "$mode" = "live" ]; then
-  extra=()
-  [ "$json" = 1 ] && extra+=(--json)
-  exec "$CCUSAGE_BIN" blocks --active ${extra[@]+"${extra[@]}"}
+hm() { printf '%dh %02dm' $(($1 / 3600)) $(($1 % 3600 / 60)); }
+local_time() { date -d "$1" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || printf '%s' "$1"; }
+clock() { date -d "$1" '+%H:%M %Z' 2>/dev/null || printf '%s' "$1"; }
+
+block_claude() {
+  local blk start end now s_epoch e_epoch
+  echo "Claude Code · the current 5-hour window (it opens with the first message and lasts 5 hours)"
+  blk="$("$CCUSAGE_BIN" blocks --active --json 2>/dev/null | jq -c '(.blocks // []) | map(select(.isActive)) | .[0] // empty')"
+  if [ -z "$blk" ]; then
+    echo "  No window is open: the last Claude Code message was more than 5 hours ago."
+    return 0
+  fi
+  start="$(jq -r '.startTime' <<<"$blk")"
+  end="$(jq -r '.endTime' <<<"$blk")"
+  now="$(date +%s)"
+  s_epoch="$(date -d "$start" +%s 2>/dev/null || echo 0)"
+  e_epoch="$(date -d "$end" +%s 2>/dev/null || echo 0)"
+  jq -r '[.tokenCounts.inputTokens, .tokenCounts.outputTokens,
+          .tokenCounts.cacheCreationInputTokens, .tokenCounts.cacheReadInputTokens,
+          .totalTokens, .costUSD, (.burnRate.costPerHour // 0),
+          (.projection.totalCost // 0), (.projection.totalTokens // 0),
+          ((.models // []) | join(", "))] | map(tostring) | @tsv' <<<"$blk" |
+  awk -F'\t' -v win="$(clock "$start") → $(clock "$end")" \
+      -v elapsed="$( [ "$s_epoch" -gt 0 ] && hm $((now - s_epoch)) || echo "?")" \
+      -v left="$( [ "$e_epoch" -gt "$now" ] && hm $((e_epoch - now)) || echo "0h 00m")" \
+      -v until_t="$(clock "$end")" '
+    function h(x) {
+      if (x >= 1e9) return sprintf("%.1fB", x / 1e9)
+      if (x >= 1e6) return sprintf("%.1fM", x / 1e6)
+      if (x >= 1e3) return sprintf("%.0fK", x / 1e3)
+      return sprintf("%d", x)
+    }
+    {
+      printf "  %-26s %s   (elapsed %s, left %s)\n", "Window:", win, elapsed, left
+      printf "  %-26s %s\n", "Models:", $10
+      printf "  %-26s input %s · output %s · cache write %s · cache read %s\n", "Spent so far:", h($1), h($2), h($3), h($4)
+      printf "  %-26s %s tokens · $%.2f\n", "", h($5), $6
+      printf "  %-26s $%.2f per hour\n", "Rate:", $7
+      printf "  %-26s %s tokens · $%.2f\n", "At this rate by " until_t ":", h($9), $8
+    }'
+}
+
+block_codex() {
+  local dir f line ts now
+  dir="${CODEX_HOME:-$HOME/.codex}/sessions"
+  line=""
+  # Newest rollouts first; the first one that carries a rate_limits record wins.
+  if [ -d "$dir" ]; then
+    while IFS= read -r f; do
+      line="$(grep '"rate_limits"' "$f" 2>/dev/null | tail -1 || true)"
+      [ -n "$line" ] && break
+    done < <(find "$dir" -name 'rollout-*.jsonl' -type f -printf '%T@ %p\n' 2>/dev/null \
+               | sort -rn | head -20 | cut -d' ' -f2-)
+  fi
+  if [ -z "$line" ]; then
+    echo "Codex · no limit reported yet: no rollout under $dir carries rate_limits"
+    return 0
+  fi
+  ts="$(jq -r '.timestamp // empty' <<<"$line" 2>/dev/null)"
+  now="$(date +%s)"
+  echo "Codex · limits as its server reported them with the last message, $(local_time "$ts")"
+  jq -r '[.. | objects | select(has("rate_limits")) | .rate_limits][0]
+         | (.plan_type // "") as $plan
+         | ((.primary // empty) | ["primary", .used_percent, .window_minutes, (.resets_at // 0), $plan]),
+           ((.secondary // empty) | ["secondary", .used_percent, .window_minutes, (.resets_at // 0), $plan])
+         | map(tostring) | @tsv' <<<"$line" 2>/dev/null |
+  while IFS=$'\t' read -r _ used mins resets _plan; do
+    case "$mins" in
+      300) name="5-hour window" ;;
+      10080) name="weekly window (7 days)" ;;
+      *) name="$((mins / 60))-hour window" ;;
+    esac
+    left="$(awk -v u="$used" 'BEGIN { printf "%.0f", 100 - u }')"
+    when="$(date -d "@$resets" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || echo "?")"
+    if [ "$resets" -gt 0 ] && [ "$resets" -le "$now" ]; then
+      note="reset since then: $when — this reading is out of date"
+    else
+      note="resets $when"
+    fi
+    printf '  %-26s %s%% used, %s%% left · %s\n' "$name:" "$(awk -v u="$used" 'BEGIN { printf "%.0f", u }')" "$left" "$note"
+  done
+}
+
+block_opencode() {
+  echo "opencode · keeps no usage-limit data locally; limits belong to each model provider"
+}
+
+if [ "$mode" = "block" ]; then
+  if [ "$json" = 1 ]; then
+    exec "$CCUSAGE_BIN" blocks --active --json
+  fi
+  echo "Usage limits · where each IDE stands now${ide:+ · $(ide_name "$ide") only}"
+  echo
+  first_section=1
+  for i in $IDES; do
+    [ -z "$ide" ] || [ "$ide" = "$i" ] || continue
+    [ "$first_section" = 1 ] || echo
+    first_section=0
+    "block_$i"
+  done
+  exit 0
 fi
+
 
 # ── one session ──────────────────────────────────────────────────────────────
 
 if [ "$mode" = "session" ]; then
   # ccusage names a Codex session by its transcript path,
   # 2026/09/18/rollout-<time>-<uuid>; codex-sessions shows only the uuid, so
-  # both are matched. Claude and OpenCode ids are the ids themselves.
+  # both are matched. Claude and opencode ids are the ids themselves.
   matches=$("$CCUSAGE_BIN" session --json 2>/dev/null | jq -c --arg id "$sid" --arg ide "$ide" '
     def uuid: (.period | capture("(?<u>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$").u) // .period;
     [ (.session // [])[]
@@ -143,7 +287,7 @@ if [ "$mode" = "session" ]; then
     die "no session matches \"$sid\"${ide:+ in $ide}" 1
   fi
   if [ "$count" -gt 1 ]; then
-    printf 'billing: "%s" matches %s sessions — give more characters:\n\n' "$sid" "$count" >&2
+    printf 'billing: "%s" matches %s sessions — give more characters, or --ide:\n\n' "$sid" "$count" >&2
     jq -r '.[] | [.agent, .shown, ((.metadata.lastActivity // "?")[0:16]), (.totalCost // 0)] | @tsv' <<<"$matches" |
       awk -F'\t' 'NR <= 10 { printf "  %-9s %-38s %-17s $%.2f\n", $1, $2, $3, $4 }
                   END { if (NR > 10) printf "  … and %d more\n", NR - 10 }' >&2
@@ -167,9 +311,11 @@ if [ "$mode" = "session" ]; then
     fi
   fi
 
-  jq -r --arg started "$started" '.[0] |
+  echo "Cost of one session · $(ide_name "$agent")"
+  echo
+  jq -r --arg started "$started" --arg idename "$(ide_name "$agent")" '.[0] |
     def n: . // 0;
-    "K\tIDE\t\(.agent)\tstr",
+    "K\tIDE\t\($idename)\tstr",
     "K\tSession\t\(.shown)\tstr",
     (if .shown != .period then "K\tTranscript\t\(.period)\tstr" else empty end),
     "K\tModels\t\((.modelsUsed // []) | join(", "))\tstr",
@@ -206,12 +352,12 @@ if [ "$mode" = "session" ]; then
   exit 0
 fi
 
-# ── period totals ────────────────────────────────────────────────────────────
+# ── totals per period ────────────────────────────────────────────────────────
 
 case "$period" in
-  day) sub="daily" ;;
-  week) sub="weekly" ;;
-  month) sub="monthly" ;;
+  day) sub="daily"; unit="day"; what="per day"; head_label="DAY" ;;
+  week) sub="weekly"; unit="week"; what="per week (Monday to Sunday)"; head_label="WEEK (Mon–Sun)" ;;
+  month) sub="monthly"; unit="month"; what="per calendar month"; head_label="MONTH" ;;
 esac
 
 if [ "$json" = 1 ]; then
@@ -236,8 +382,13 @@ rows=$("$CCUSAGE_BIN" "$sub" --json --by-agent ${range[@]+"${range[@]}"} 2>/dev/
   | sort_by(.[0])
   | .[] | @tsv')
 
+scope="$(ide_name "$ide")"
 if [ -z "$rows" ]; then
-  echo "No usage recorded${ide:+ for $ide}${since:+ since $since}${until_d:+ until $until_d}."
+  if [ "$today" = 1 ]; then
+    echo "Cost today ($since) · $scope: no usage recorded."
+  else
+    echo "Cost $what · $scope: no usage recorded${since:+ since $since}${until_d:+ until $until_d}."
+  fi
   exit 0
 fi
 
@@ -246,9 +397,34 @@ if [ "$limit" -gt 0 ] && [ "$all" -gt "$limit" ]; then
   rows=$(printf '%s\n' "$rows" | tail -n "$limit")
 fi
 shown=$(printf '%s\n' "$rows" | wc -l)
+first="$(printf '%s\n' "$rows" | head -1 | cut -f1)"
+last="$(printf '%s\n' "$rows" | tail -1 | cut -f1)"
+
+# A week is named by its Monday; the label shows the Sunday too, so nobody
+# reads 2026-09-21 as a single day. No GNU date (macOS): the Monday alone.
+if [ "$period" = "week" ]; then
+  rows="$(printf '%s\n' "$rows" | while IFS= read -r line; do
+    p="${line%%$'\t'*}"
+    e="$(date -d "$p +6 days" +%m-%d 2>/dev/null || true)"
+    printf '%s%s\n' "$p${e:+ … $e}" "${line#"$p"}"
+  done)"
+fi
+
+# The heading: what the table is, then which rows are in it.
+if [ "$today" = 1 ]; then
+  echo "Cost today ($since) · $scope"
+else
+  echo "Cost $what · $scope · ${unit}s with no usage are not listed"
+  if [ "$shown" -lt "$all" ]; then
+    echo "last $shown of $all ${unit}s with usage, $first … $last  (-n 0 for all, --since to start earlier)"
+  else
+    echo "all $all ${unit}s with usage, $first … $last"
+  fi
+fi
+echo
 
 printf '%s\n' "$rows" | awk -F'\t' -v per_ide="$([ -z "$ide" ] && echo 1 || echo 0)" \
-  -v label="$(echo "$period" | tr '[:lower:]' '[:upper:]')" '
+  -v label="$head_label" -v w="$([ "$period" = week ] && echo 18 || echo 10)" '
   function h(x) {
     if (x >= 1e9) return sprintf("%.1fB", x / 1e9)
     if (x >= 1e6) return sprintf("%.1fM", x / 1e6)
@@ -256,13 +432,14 @@ printf '%s\n' "$rows" | awk -F'\t' -v per_ide="$([ -z "$ide" ] && echo 1 || echo
     return sprintf("%d", x)
   }
   function pct(r, t) { return t > 0 ? sprintf("%.0f%%", r / t * 100) : "-" }
-  function line(p, i, o, w, r, t, c, a, b, d) {
-    printf "%-10s %7s %7s %8s %8s %8s %6s %9s", p, h(i), h(o), h(w), h(r), h(t), pct(r, t), sprintf("$%.2f", c)
+  function line(p, i, o, cw, r, t, c, a, b, d) {
+    printf "%-" w "s %7s %7s %8s %8s %8s %6s %9s", p, h(i), h(o), h(cw), h(r), h(t), pct(r, t), sprintf("$%.2f", c)
     if (per_ide) printf "  %9s %9s %9s", sprintf("$%.2f", a), sprintf("$%.2f", b), sprintf("$%.2f", d)
     printf "\n"
   }
   BEGIN {
-    printf "%-10s %7s %7s %8s %8s %8s %6s %9s", label, "INPUT", "OUTPUT", "CACHE_WR", "CACHE_RD", "TOTAL", "CACHE%", "COST"
+    if (length("TOTAL (rows above)") > w) w = length("TOTAL (rows above)")
+    printf "%-" w "s %7s %7s %8s %8s %8s %6s %9s", label, "INPUT", "OUTPUT", "CACHE_WR", "CACHE_RD", "TOTAL", "CACHE%", "COST"
     if (per_ide) printf "  %9s %9s %9s", "claude", "codex", "opencode"
     printf "\n"
   }
@@ -270,8 +447,4 @@ printf '%s\n' "$rows" | awk -F'\t' -v per_ide="$([ -z "$ide" ] && echo 1 || echo
     line($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     for (k = 2; k <= 10; k++) s[k] += $k
   }
-  END { line("TOTAL", s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9], s[10]) }'
-
-if [ "$shown" -lt "$all" ]; then
-  echo "(last $shown of $all periods; -n 0 for all, --since to start earlier)"
-fi
+  END { line("TOTAL (rows above)", s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9], s[10]) }'

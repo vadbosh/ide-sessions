@@ -160,31 +160,59 @@ $ opencode-sessions --sum-orig ses_fa66c4184ffepvA00VLoagntRt
 
 ## Cost: `billing`
 
-`billing` answers two questions: how much per day, week or month, and what one
-session cost. It does not price anything itself — [ccusage](https://ccusage.com)
-reads the same local logs the other three commands read and prices them;
-`billing` picks the view and lays out the table.
+`billing` answers three questions: how much per day, week or month; what one
+session cost; and where each IDE stands against its usage limits. It does not
+price anything itself — [ccusage](https://ccusage.com) reads the same local
+logs the other three commands read and prices them; `billing` picks the view
+and lays out the table.
 
 ```bash
-billing                           # last 20 days, all IDEs, cost per IDE
-billing week --since 2026-09-01   # weeks since a date
-billing month --ide codex         # one IDE per month
-billing -n 0                      # every period, not just the last 20
-billing --id <ID>                 # one session: tokens, cache, cost, per model
-billing --id <ID> --ide codex     # when the same prefix exists in two IDEs
-billing live                      # the current 5-hour billing block
+billing days                      # last 20 days with usage, all IDEs, cost per IDE
+billing days --ide claude         # the same, Claude Code only
+billing weeks --ide codex         # Codex per week, Monday to Sunday
+billing months --ide opencode     # opencode per calendar month
+billing weeks --since 2026-09-01  # all IDEs, weeks from a date
+billing today                     # one row: today
+billing days -n 0                 # every day with usage, not just the last 20
+billing --id <ID>                 # one session, any IDE: tokens, cache, cost, per model
+billing block                     # usage limits, each IDE
 billing --json                    # ccusage's own JSON instead of the table
 ```
+
+Every table opens with a line that says what it is — the period, the IDEs, and
+that periods with no usage are not listed — and which rows it holds:
+
+```
+$ billing weeks -n 2
+Cost per week (Monday to Sunday) · all IDEs · weeks with no usage are not listed
+last 2 of 18 weeks with usage, 2026-09-14 … 2026-09-21  (-n 0 for all, --since to start earlier)
+
+WEEK (Mon–Sun)       INPUT  OUTPUT CACHE_WR CACHE_RD    TOTAL CACHE%      COST     claude     codex  opencode
+2026-09-14 … 09-20    163K    3.1M    16.4M     1.5B     1.5B    99%   $971.05    $970.05     $0.70     $0.31
+2026-09-21 … 09-27      5K    2.0M    13.6M   776.8M   792.4M    98%   $431.78    $431.78     $0.00     $0.00
+TOTAL (rows above)    168K    5.1M    30.0M     2.3B     2.3B    99%  $1402.83   $1401.83     $0.70     $0.31
+```
+
+`billing block` reads each IDE where it keeps its limits. **Claude Code**: the
+open 5-hour window — it opens with the first message — with what is spent, the
+rate, and where the rate leads by the window's end, from ccusage. **Codex**:
+the used share of each window (weekly, 5-hour) and when it resets, as the Codex
+server reported it beside the last response, from the newest rollout under
+`~/.codex/sessions`; a reset already past is flagged as an out-of-date reading.
+**opencode** keeps no limit data in its SQLite store, and `billing` says so.
 
 `<ID>` is the id the session commands show — `claude-sessions`,
 `codex-sessions`, `opencode-sessions` — and a unique prefix is enough. ccusage
 names a Codex session by its transcript path; `billing` matches the uuid at its
-end, so the id from `codex-sessions` works as is. A prefix that fits several
-sessions lists them instead of guessing.
+end, so the id from `codex-sessions` works as is. The form is the same for every
+IDE: the IDE is found from the id. A prefix that fits several sessions lists
+them instead of guessing; `--ide` narrows it.
 
 ```
 $ billing --id bdc2f598
-  IDE:           claude
+Cost of one session · Claude Code
+
+  IDE:           Claude Code
   Session:       bdc2f598-3b6a-4e6f-a648-10ba0f1d4360
   Models:        claude-opus-5-5
   Started:       2026-09-11T09:40:02Z

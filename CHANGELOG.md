@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.8.0
+
+**`billing` says what each table is.** A table of dates under `DAY` read as a
+data dump, and `billing week` read as "one week". Every table now opens with a
+line naming the period, the IDEs and that periods with no usage are not listed,
+then which rows it holds — "last 20 of 71 days with usage, 2026-08-29 …
+2026-09-25". The verbs are plural, `days`, `weeks`, `months` (the singular
+still works), a week row names both its Monday and its Sunday, `today` is one
+row, and the sum is `TOTAL (rows above)`.
+
+**`billing block` covers all three IDEs.** It was ccusage's own Claude Code
+screen under the name `live`, with nothing saying what it belonged to. Now:
+Claude Code's open 5-hour window — spent, rate, where the rate leads by its
+end; Codex's used share of each window and when it resets, read from the
+`rate_limits` its server logs beside every response, with a reading whose reset
+has already passed flagged as out of date; and opencode, which keeps no limit
+data in its SQLite store, said in so many words. `live` still works.
+
+**One form of `--id` for every IDE.** The help showed `--ide codex` on the
+Codex example alone, as if Codex needed it. It never did: the IDE is found from
+the id, and `--ide` only narrows a prefix two IDEs share. The examples are now
+one line per IDE in the same form, and the session card opens with the IDE.
+
 ## 0.7.0
 
 **A fourth command, `billing`: what the sessions cost.** It answers two

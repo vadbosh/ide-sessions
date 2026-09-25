@@ -645,7 +645,7 @@ mkdir -p "$STUB"
 cat > "$STUB/ccusage" <<'SH'
 #!/usr/bin/env bash
 case "$1" in
-  daily|monthly|session) cat "$(dirname "$0")/$1.json" ;;
+  daily|weekly|monthly|session|blocks) cat "$(dirname "$0")/$1.json" ;;
   *) exit 1 ;;
 esac
 SH
@@ -676,6 +676,30 @@ cat > "$STUB/monthly.json" <<'JSON'
 ]}
 JSON
 
+cat > "$STUB/weekly.json" <<'JSON'
+{"weekly": [
+  {"period": "2026-03-02", "inputTokens": 310, "outputTokens": 3090,
+   "cacheCreationTokens": 30000, "cacheReadTokens": 966700, "totalTokens": 1000100,
+   "totalCost": 3.5, "agents": []}
+]}
+JSON
+
+cat > "$STUB/blocks.json" <<'JSON'
+{"blocks": [
+  {"isActive": true, "startTime": "2026-03-02T10:00:00.000Z", "endTime": "2026-03-02T15:00:00.000Z",
+   "models": ["claude-opus-5-5"], "costUSD": 4.5, "totalTokens": 2000000,
+   "tokenCounts": {"inputTokens": 10, "outputTokens": 20000,
+                   "cacheCreationInputTokens": 30000, "cacheReadInputTokens": 1949990},
+   "burnRate": {"costPerHour": 1.5}, "projection": {"totalCost": 7.25, "totalTokens": 3500000}}
+]}
+JSON
+
+# Codex logs the limits its server reported beside every token count. The reset
+# time is in the past, so the reading must say it is out of date.
+CXR="$CODEX_HOME/sessions/2026/03/03/rollout-2026-03-03T09-00-00-01a00000-0000-7000-8000-000000000011.jsonl"
+mkdir -p "$(dirname "$CXR")"
+printf '%s\n' '{"timestamp":"2026-03-03T09:05:00.000Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":37.0,"window_minutes":10080,"resets_at":1772500000},"secondary":null}}}' > "$CXR"
+
 cat > "$STUB/session.json" <<'JSON'
 {"session": [
   {"agent": "claude", "period": "aa000000-0000-4000-8000-000000000001",
@@ -703,7 +727,10 @@ bill() { CCUSAGE_BIN="$STUB/ccusage" "$ROOT/bin/billing" "$@" 2>&1; }
 
 out="$(bill)"
 contains "billing: a column per IDE when no IDE is named" "$out" "claude     codex  opencode"
-contains "billing: periods run oldest first"   "$(printf '%s\n' "$out" | sed -n 2p)" "2026-03-01"
+# A bare table of dates read as a data dump: the first line says what it is.
+contains "billing: the table says what it is"  "$(printf '%s\n' "$out" | head -1)" "Cost per day · all IDEs · days with no usage are not listed"
+contains "billing: and which rows it holds"    "$out" "all 2 days with usage, 2026-03-01 … 2026-03-02"
+contains "billing: periods run oldest first"   "$(printf '%s\n' "$out" | awk '/^DAY /{getline; print; exit}')" "2026-03-01"
 # TOTAL is also a column header, so the row is looked for where it belongs.
 last="$(printf '%s\n' "$out" | tail -1)"
 contains "billing: the last row is TOTAL"      "$last" 'TOTAL '
@@ -716,10 +743,34 @@ contains "billing --ide: that IDE's share"     "$out" '$1.00'
 absent   "billing --ide: other IDEs' days go"  "$out" "2026-03-01"
 
 out="$(bill -n 1)"
-contains "billing -n: says what it cut"        "$out" "(last 1 of 2 periods"
+contains "billing -n: says what it cut"        "$out" "last 1 of 2 days with usage"
 
-out="$(bill month)"
-contains "billing month: monthly rows"         "$out" "2026-03 "
+out="$(bill months)"
+contains "billing months: monthly rows"        "$out" "2026-03 "
+contains "billing months: says so"             "$out" "Cost per calendar month"
+contains "billing month still works"           "$(bill month)" "Cost per calendar month"
+
+# `billing week` read as "one week". The verb is plural and the row names
+# both ends of the week.
+out="$(bill weeks)"
+contains "billing weeks: Monday to Sunday"     "$out" "Cost per week (Monday to Sunday)"
+contains "billing weeks: a row names its Sunday" "$out" "2026-03-02 … 03-08"
+
+contains "billing today: one day, named"       "$(bill today)" "Cost today ("
+
+out="$(bill block)"
+contains "billing block: every IDE, one heading" "$out" "Usage limits · where each IDE stands now"
+contains "billing block: the Claude window"    "$out" "Claude Code · the current 5-hour window"
+contains "billing block: its projection"       "$out" '$7.25'
+contains "billing block: Codex limits from its log" "$out" "weekly window (7 days):    37% used, 63% left"
+contains "billing block: a past reset says the reading is old" "$out" "this reading is out of date"
+contains "billing block: opencode, honestly"   "$out" "opencode · keeps no usage-limit data locally"
+out="$(bill block --ide codex)"
+absent   "billing block --ide: one IDE only"   "$out" "Claude Code ·"
+contains "billing live still works"            "$(bill live)" "Usage limits"
+
+out="$(CCUSAGE_BIN="$TMP/no-such-ccusage" "$ROOT/bin/billing" --help 2>&1)"
+contains "billing --help: one --id form for every IDE" "$out" "billing --id ses_f4ba6fcd         an opencode session"
 
 out="$(bill --id aa000000-0000-4000-8000-000000000001)"
 contains "billing --id: the session"           "$out" "Session:       aa000000-0000-4000-8000-000000000001"
