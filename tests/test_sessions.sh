@@ -845,6 +845,49 @@ contains "opencode --list-models: but says it left one out" "$out" "not listed: 
 out="$(PATH="$TMP/stub-models:$PATH" "$ROOT/bin/opencode-sessions" --list-models envonly 2>&1)"
 contains "opencode --list-models P: asked by name, shown" "$out" "  envonly/model-x"
 
+# ── Ctrl-C during --sum ─────────────────────────────────────────────────────
+# Reported from a colleague's machine: --sum-orig interrupted with Ctrl-C, and
+# from then on every run for that id printed "Execution error". The claude CLI
+# answered the interrupt by printing that line and exiting 0; the script's
+# `trap … INT` cleaned up and then carried on, so the line became the summary,
+# went into the cache, and every later run served it from there.
+echo "Ctrl-C during --sum"
+
+mkdir -p "$TMP/stub-int"
+cat > "$TMP/stub-int/claude" <<'SH'
+#!/usr/bin/env bash
+cat > /dev/null
+trap 'echo "Execution error"; exit 0' INT
+sleep 30 & wait
+echo "### A real summary"
+SH
+chmod +x "$TMP/stub-int/claude"
+INT_CACHE="$TMP/int-cache"
+
+# Job control gives the background run its own process group with SIGINT
+# live, which is what a terminal delivers on Ctrl-C.
+set -m
+PATH="$TMP/stub-int:$PATH" IDE_SESSIONS_SUM_CACHE="$INT_CACHE" \
+    "$ROOT/bin/claude-sessions" --sum-orig "$SID" --sum-model stub > "$TMP/int.out" 2>&1 &
+int_pid=$!
+sleep 1.5
+kill -INT -- "-$int_pid" 2>/dev/null
+set +m
+wait "$int_pid"; int_rc=$?
+
+if [ "$int_rc" = 130 ]; then ok "Ctrl-C ends --sum with 130"
+else nope "Ctrl-C ends --sum with 130" "exit $int_rc"; fi
+cached="$(cat "$INT_CACHE"/* 2>/dev/null || true)"
+absent "an interrupted --sum caches nothing it was not given" "$cached" "Execution error"
+absent "an interrupted --sum prints no summary" "$(cat "$TMP/int.out")" "Execution error"
+
+# Every trap that catches INT or TERM has to end the script: a handler that
+# returns lets bash carry on from the next line, whatever state it is in.
+bad="$(grep -nE "^[[:space:]]*trap '[^']*' .*(INT|TERM)" "$ROOT"/bin/*-sessions "$ROOT/bin/billing" \
+       | grep -v "exit" || true)"
+if [ -z "$bad" ]; then ok "no INT/TERM trap returns instead of exiting"
+else nope "no INT/TERM trap returns instead of exiting" "$bad"; fi
+
 # ── report ──────────────────────────────────────────────────────────────────
 echo
 echo "$PASS passed, $FAIL failed"

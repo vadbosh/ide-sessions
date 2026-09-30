@@ -460,7 +460,13 @@ sum_progress_stop() {
 }
 
 # An interrupted run must not leave the counter running in the background.
-trap 'sum_progress_stop' EXIT INT TERM
+trap 'sum_progress_stop' EXIT
+# Ctrl-C and kill end the script. A handler that only cleans up returns, and
+# bash carries on from the next line: an interrupted model call then left its
+# last words ("Execution error" from claude -p) as the summary, cached for good.
+# exit runs the EXIT trap, so the cleanup still happens.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 
 # ── --list-models ───────────────────────────────────────────────────────────
@@ -585,7 +591,7 @@ if [ -n "$SUM_ID" ]; then
   # terminal appends to its rollout continuously, and "newer than a mark" would
   # match that live session and delete it.
   before=$(mktemp)
-  trap 'sum_progress_stop; rm -f "$last_msg" "$before"' EXIT INT TERM
+  trap 'sum_progress_stop; rm -f "$last_msg" "$before"' EXIT
   find "$SESSIONS_DIR" -name 'rollout-*.jsonl' 2>/dev/null | sort > "$before"
 
   sum_progress_start "summarizing $(printf '%s\n' "$digest" | grep -c '^## part') part(s) with ${model:-the configured Codex model}"

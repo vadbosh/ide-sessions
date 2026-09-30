@@ -514,7 +514,13 @@ sum_progress_stop() {
 }
 
 # An interrupted run must not leave the counter running in the background.
-trap 'sum_progress_stop' EXIT INT TERM
+trap 'sum_progress_stop' EXIT
+# Ctrl-C and kill end the script. A handler that only cleans up returns, and
+# bash carries on from the next line: an interrupted model call then left its
+# last words ("Execution error" from claude -p) as the summary, cached for good.
+# exit runs the EXIT trap, so the cleanup still happens.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 
 # ── --list-models ───────────────────────────────────────────────────────────
@@ -635,7 +641,7 @@ if [ -n "$SUM_ID" ]; then
   }
 
   stream=$(mktemp)
-  trap 'rm -f "$stream"' EXIT
+  trap 'sum_progress_stop; rm -f "$stream"' EXIT
 
   # --format json, not the pretty output: the default prints a header line and
   # ANSI colour, which would end up inside the cached summary.

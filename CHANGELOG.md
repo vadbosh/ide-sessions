@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.9.1
+
+**Ctrl-C during `--sum` could poison the cache for that session.** Reported
+from a colleague's machine: `claude-sessions --sum-orig <ID>` interrupted
+halfway, and from then on every run for that id printed `Execution error`. The
+claude CLI answers Ctrl-C by printing that line and exiting 0; the script's
+`trap … INT` cleaned up its scratch session and then returned, and bash carried
+on from the next line — the line became the summary, was written to the cache
+and was served from there on every later run. Reproduced with a stub `claude`
+before the fix.
+
+All three commands had the same trap. Ctrl-C now ends the script with 130 and
+`kill` with 143; the cleanup still runs, from the exit trap. A test pins it:
+an interrupted `--sum` exits 130 and caches nothing, and no INT/TERM trap in
+`bin/` may return instead of exiting.
+
+A cache poisoned before this release is not cleared by it. Once per affected
+session: `claude-sessions --sum-orig <ID> --sum-refresh` (or `--sum`, whichever
+was interrupted).
+
 ## 0.9.0
 
 **`--list-models` in all three: the names `--sum-model` accepts.** Choosing a
