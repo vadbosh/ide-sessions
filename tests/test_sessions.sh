@@ -888,6 +888,87 @@ bad="$(grep -nE "^[[:space:]]*trap '[^']*' .*(INT|TERM)" "$ROOT"/bin/*-sessions 
 if [ -z "$bad" ]; then ok "no INT/TERM trap returns instead of exiting"
 else nope "no INT/TERM trap returns instead of exiting" "$bad"; fi
 
+# ── agent-history ───────────────────────────────────────────────────────────
+echo "agent-history"
+
+AH_HOME="$TMP/ah-home"
+mkdir -p "$AH_HOME/.claude"
+python3 - "$AH_HOME/.claude/history.jsonl" <<'PY'
+import json, sys
+with open(sys.argv[1], "w") as f:
+    for i, (sid, proj, text) in enumerate([
+        ("aaaa1111-0000-0000-0000-000000000001", "/work/repo", "почини парсер"),
+        ("aaaa1111-0000-0000-0000-000000000001", "/work/repo", "add a test"),
+        ("bbbb2222-0000-0000-0000-000000000002", "/other/place", "unrelated ask"),
+    ]):
+        f.write(json.dumps({"sessionId": sid, "project": proj, "display": text,
+                            "timestamp": 1790000000000 + i * 60000}) + "\n")
+PY
+ah() { env -u CLAUDE_CODE_SESSION_ID HOME="$AH_HOME" "$ROOT/bin/agent-history" "$@" 2>&1 | sed 's/\x1b\[[0-9;]*m//g'; }
+out="$(ah claude sessions all 5)"
+contains "agent-history: sessions lists the session"         "$out" "aaaa1111-0000-0000-0000-000000000001"
+contains "agent-history: sessions counts entries per session" "$out" "n=2"
+out="$(ah claude /work/repo 10)"
+contains "agent-history: a project filter keeps its entries" "$out" "почини парсер"
+absent   "agent-history: a project filter drops the others"  "$out" "unrelated ask"
+contains "agent-history: every run names the full-history file" "$out" "[FULL history: 2 entries"
+out="$(ah claude session=bbbb2222)"
+contains "agent-history: session=<fragment> finds one session" "$out" "unrelated ask"
+if "$ROOT/bin/agent-history" --help >/dev/null 2>&1; then ok "agent-history: --help exits 0"
+else nope "agent-history: --help exits 0"; fi
+
+# ── install.sh ──────────────────────────────────────────────────────────────
+# Into a throwaway HOME with all three assistants present. The variables the
+# installer reads to find them are cleared, so a value set in the caller's
+# environment cannot steer it at the real directories.
+echo "install.sh"
+
+IN_HOME="$TMP/in-home"
+inst() {
+    env -u CLAUDE_CONFIG_DIR -u CODEX_HOME -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u IDE_SESSIONS_BIN_DIR \
+        HOME="$IN_HOME" bash "$ROOT/install.sh" "$@" >"$TMP/inst.out" 2>&1
+}
+in_state() { (cd "$IN_HOME" && find . -type f -not -path './.local/state/*' -exec md5sum {} + | sort -k2); }
+rm -rf "$IN_HOME"; mkdir -p "$IN_HOME/.claude" "$IN_HOME/.codex" "$IN_HOME/.config/opencode"
+inst --dry-run
+if [ -z "$(cd "$IN_HOME" && find . -type f)" ]; then ok "install: --dry-run writes nothing"
+else nope "install: --dry-run writes nothing" "$(cd "$IN_HOME" && find . -type f)"; fi
+inst; first="$(in_state)"; inst; inst
+if [ "$first" = "$(in_state)" ]; then ok "install: three runs leave the same files"
+else nope "install: three runs leave the same files" "$(diff <(echo "$first") <(in_state) | head -5)"; fi
+while read -r installed source; do
+    if cmp -s "$IN_HOME/$installed" "$ROOT/$source"; then ok "install: $installed = $source"
+    else nope "install: $installed = $source" "missing or different"; fi
+done <<'PAIRS'
+.local/bin/agent-history bin/agent-history
+.local/bin/claude-sessions bin/claude-sessions
+.claude/skills/history/SKILL.md skills/history/SKILL.md
+.claude/commands/history.md commands/history.md
+.codex/skills/history/SKILL.md skills/history/SKILL.md
+.config/opencode/skills/history/SKILL.md skills/history/SKILL.md
+.config/opencode/commands/history.md commands/history.md
+PAIRS
+if [ ! -e "$IN_HOME/.codex/commands" ]; then ok "install: codex gets no command (it has no command layer)"
+else nope "install: codex gets no command"; fi
+if [ "$(stat -c %a "$IN_HOME/.claude/skills/history/SKILL.md")" = 644 ]; then ok "install: a skill file is not made executable"
+else nope "install: a skill file is not made executable" "$(stat -c %a "$IN_HOME/.claude/skills/history/SKILL.md")"; fi
+printf 'hand edit\n' > "$IN_HOME/.claude/skills/history/SKILL.md"
+inst
+if ls "$IN_HOME/.local/state/ide-sessions/backups/"history-SKILL.md.bak.* >/dev/null 2>&1 \
+   && [ -z "$(find "$IN_HOME/.claude" -name '*.bak.*')" ]; then
+    ok "install: a hand-edited skill is backed up outside the assistant's directory"
+else
+    nope "install: a hand-edited skill is backed up outside the assistant's directory" "$(find "$IN_HOME" -name '*.bak.*')"
+fi
+inst --uninstall
+left="$(cd "$IN_HOME" && find . -type f -not -path './.local/state/*')"
+if [ -z "$left" ] && [ ! -d "$IN_HOME/.claude/skills/history" ]; then ok "install: --uninstall removes everything it installed"
+else nope "install: --uninstall removes everything it installed" "$left"; fi
+rm -rf "$IN_HOME"; mkdir -p "$IN_HOME/.claude"
+inst
+if [ ! -e "$IN_HOME/.codex" ] && [ ! -e "$IN_HOME/.config/opencode" ]; then ok "install: an assistant that is not there is not created"
+else nope "install: an assistant that is not there is not created"; fi
+
 # ── report ──────────────────────────────────────────────────────────────────
 echo
 echo "$PASS passed, $FAIL failed"

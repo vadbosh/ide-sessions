@@ -3,7 +3,8 @@
 **Three commands that list, summarize and prune the sessions of Claude Code,
 Codex CLI and opencode — including the one you lost track of.** A fourth,
 `billing`, shows what they cost: per day, week or month across all three, or
-for one session by its id.
+for one session by its id. A fifth, `agent-history`, shows the prompts you typed,
+in any of them, after the session is gone.
 
 [Русская версия](README.RU.md) · [Changelog](CHANGELOG.md)
 
@@ -72,7 +73,7 @@ by someone who did not run the session.
 ```bash
 git clone <this repo> ide-sessions
 cd ide-sessions
-./install.sh              # copies the four commands into ~/.local/bin
+./install.sh              # five commands into ~/.local/bin, the history skill and /history into each assistant
 ./install.sh --dry-run    # see what it would do first
 ```
 
@@ -272,6 +273,42 @@ Cost of one session · Claude Code
 - **The model** is what the API reported for each response, not what the
   session was started with: a `/model` switch mid-session shows up as a second
   row.
+
+## Prompt history: `agent-history` and `/history`
+
+The arrow-key history of each IDE dies with the session. All three keep a
+persistent log anyway — `~/.claude/history.jsonl`, `~/.codex/history.jsonl`,
+opencode's database — and `agent-history` reads it.
+
+```
+$ agent-history claude sessions all 3
+2026-09-29 09:57..2026-09-29 12:23  n=46   99b598c7-083f-4c5b-ad48-d4e243c434c3  [/srv/infra]
+2026-09-30 11:28..2026-09-30 11:33  n=4    7071011b-96fd-427f-b140-20f9c132c613  [/srv/infra]
+2026-10-01 12:51..2026-10-01 16:28  n=18   6bdedc19-62f0-4996-a91f-cbc4e93cf31c  [/srv/app]
+```
+
+```bash
+agent-history claude                    # this session's prompts (the default)
+agent-history claude /srv/app 100       # every session whose directory contains /srv/app
+agent-history codex sessions all        # sessions: first/last time, id, prompt count, directory
+agent-history opencode session=ses_fa66 # one session, by any fragment of its id
+agent-history claude all --file         # write to a /tmp file, print only its path
+```
+
+Every run also writes the unlimited result to a file in `/tmp` and prints its
+path on the first line, so nothing clipped off the screen is lost. Each run
+removes the ones older than an hour.
+
+"This session" is exact in Claude Code (`CLAUDE_CODE_SESSION_ID`). Codex and
+opencode pass no session id to a tool, so there it is the session that wrote
+the last prompt — the one asking.
+
+Inside an assistant, `/history` (Claude Code, opencode) or the `history` skill
+(all three, triggered by "history", «история команд») runs the same command
+and puts its output in the reply — Claude Code collapses a tool's output, so a
+reply without it would show nothing. The installer puts the skill into every
+assistant it finds and the command into Claude Code and opencode; Codex has no
+user commands.
 
 ## How `--sum` works
 

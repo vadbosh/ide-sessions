@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.10.0
+
+**`agent-history`, the `history` skill and `/history` now ship here.**
+`agent-history` reads the prompt history all three IDEs keep across sessions
+(`~/.claude/history.jsonl`, `~/.codex/history.jsonl`, opencode's database): a
+session list, one session by an id fragment, or every prompt under a
+directory. It had been running on the author's machine with no repository
+behind it, and the skill and the command that call it lived only in a private
+config canon — a lost disk would have taken all three. `install.sh` now puts
+the command in the bin directory with the other four, the skill into every
+assistant found (`~/.claude`, `~/.codex`, `~/.config/opencode`) and `/history`
+into Claude Code and opencode; `--uninstall` removes them. A skill or command
+file it replaces is backed up to `~/.local/state/ide-sessions/backups/`, not
+beside itself, so a backup never loads as a second skill.
+
+Changed on the way in: `agent-history --help` prints the usage and exits 0
+(the installer runs it to verify the install); the skill puts the output in
+the reply instead of saying the tool shows it — Claude Code collapses a tool's
+output, so `/history` used to show nothing; its note that no argument filters
+by the current directory was out of date (it means the current session).
+
+Tests: agent-history over a sample history, and install into a temporary HOME
+— three runs identical, `--dry-run` writes nothing, `--uninstall` removes it
+all, a missing assistant is not created. 176 passed.
+
 ## 0.9.1
 
 **Ctrl-C during `--sum` could poison the cache for that session.** Reported

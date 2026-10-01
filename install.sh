@@ -1,26 +1,39 @@
 #!/usr/bin/env bash
 # Install the ide-sessions tools — Linux / macOS.
 #
-#   ./install.sh                 install all four commands on PATH
+#   ./install.sh                 install the five commands on PATH, and the
+#                                history skill and /history command into
+#                                every assistant found
 #   ./install.sh --dry-run       print what would happen, change nothing
-#   ./install.sh --bin-dir D     install into D instead of ~/.local/bin
-#   ./install.sh --uninstall     remove the commands this script installed
+#   ./install.sh --bin-dir D     install the commands into D instead of ~/.local/bin
+#   ./install.sh --uninstall     remove everything this script installed
 #
 # The three session commands are independent: each one reads only its own
 # IDE's storage, so installing all of them on a machine that has one IDE is
 # harmless — the others simply report that they found nothing. billing reads
 # all three through ccusage and says how to install it when it is missing.
 #
+# agent-history reads the prompt history all three IDEs keep across sessions;
+# the history skill (claude, codex, opencode) and the /history command (claude,
+# opencode — codex has no user commands) are how an assistant runs it.
+#
 # Idempotent: re-running replaces only what changed. A file it overwrites is
-# copied to <file>.bak.<timestamp> ONLY when that content is not already in the
-# source repository — a hand edit is the one thing git cannot give back.
+# backed up ONLY when that content is not already in the source repository — a
+# hand edit is the one thing git cannot give back. A command is backed up next
+# to itself; a skill or command file of an assistant goes to
+# ~/.local/state/ide-sessions/backups/, outside every directory an assistant
+# reads, so a backup never loads as a second skill.
 # Nothing outside $HOME is touched.
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${IDE_SESSIONS_BIN_DIR:-$HOME/.local/bin}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-COMMANDS="claude-sessions codex-sessions opencode-sessions billing"
+COMMANDS="claude-sessions codex-sessions opencode-sessions billing agent-history"
+BACKUPS="${XDG_STATE_HOME:-$HOME/.local/state}/ide-sessions/backups"
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
+OPENCODE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
 
 DRY_RUN=0
 UNINSTALL=0
@@ -29,7 +42,7 @@ while [ $# -gt 0 ]; do
         --dry-run)   DRY_RUN=1 ;;
         --uninstall) UNINSTALL=1 ;;
         --bin-dir)   BIN_DIR="${2:-}"; shift ;;
-        -h|--help)   sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
+        -h|--help)   sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
@@ -59,8 +72,8 @@ in_git_history() {
     [ -n "$sha" ] && git -C "$SRC" cat-file -e "$sha" 2>/dev/null
 }
 
-install_file() {
-    local src="$1" dst="$2"
+install_file() {     # install_file SRC DST [MODE] [BACKUP_DIR]
+    local src="$1" dst="$2" mode="${3:-755}" bdir="${4:-}"
     if [ -f "$dst" ] && cmp -s "$src" "$dst"; then
         say "    = $(tilde "$dst")"
         return 0
@@ -73,6 +86,10 @@ install_file() {
     if [ -f "$dst" ]; then
         if in_git_history "$dst"; then
             say "    ~ $(tilde "$dst")"
+        elif [ -n "$bdir" ]; then
+            mkdir -p "$bdir"
+            cp -p "$dst" "$bdir/$(basename "$(dirname "$dst")")-$(basename "$dst").bak.$STAMP"
+            say "    ~ $(tilde "$dst")  (backup in $(tilde "$bdir") — not in git)"
         else
             cp -p "$dst" "$dst.bak.$STAMP"
             say "    ~ $(tilde "$dst")  (backup .bak.$STAMP — edited by hand, not in git)"
@@ -81,7 +98,22 @@ install_file() {
         say "    + $(tilde "$dst")"
     fi
     cp "$src" "$dst"
-    chmod 755 "$dst"
+    chmod "$mode" "$dst"
+}
+
+# Where each assistant found on this machine reads the history skill and the
+# /history command. Codex has no user commands; it finds a skill in
+# ~/.codex/skills by itself, config.toml only switches one off.
+assistant_files() {  # prints: SRC DST, one pair per line
+    [ -d "$CLAUDE_DIR" ] && printf '%s %s\n' \
+        skills/history/SKILL.md "$CLAUDE_DIR/skills/history/SKILL.md" \
+        commands/history.md     "$CLAUDE_DIR/commands/history.md"
+    [ -d "$CODEX_DIR" ] && printf '%s %s\n' \
+        skills/history/SKILL.md "$CODEX_DIR/skills/history/SKILL.md"
+    [ -d "$OPENCODE_DIR" ] && printf '%s %s\n' \
+        skills/history/SKILL.md "$OPENCODE_DIR/skills/history/SKILL.md" \
+        commands/history.md     "$OPENCODE_DIR/commands/history.md"
+    return 0
 }
 
 # ── uninstall ───────────────────────────────────────────────────────────────
@@ -100,6 +132,16 @@ if [ "$UNINSTALL" -eq 1 ]; then
             say "    - $(tilde "$dst")"
         fi
     done
+    while read -r _ dst; do
+        [ -f "$dst" ] || continue
+        if [ "$DRY_RUN" -eq 1 ]; then
+            say "    would remove $(tilde "$dst")"
+        else
+            rm -f "$dst"
+            rmdir "$(dirname "$dst")" 2>/dev/null || true   # an emptied skills/history/
+            say "    - $(tilde "$dst")"
+        fi
+    done < <(assistant_files)
     say ""
     say "  Cached summaries and the trash dir are left alone:"
     say "    $(tilde "${IDE_SESSIONS_SUM_CACHE:-$HOME/.cache/ide-sessions-summaries}")"
@@ -124,6 +166,11 @@ say "  $(tilde "$BIN_DIR")"
 for cmd in $COMMANDS; do
     install_file "$SRC/bin/$cmd" "$BIN_DIR/$cmd"
 done
+
+say "── history skill and /history ──"
+while read -r src dst; do
+    install_file "$SRC/$src" "$dst" 644 "$BACKUPS"
+done < <(assistant_files)
 
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
@@ -184,6 +231,7 @@ done
 [ "$failed" -eq 0 ] || exit 1
 
 say ""
+say "  History:   agent-history claude sessions all 10   ·   /history in Claude Code or Opencode"
 say "  List:      claude-sessions"
 say "  Summarize: claude-sessions --sum <SESSION ID>"
 say "  Free look: claude-sessions --sum <SESSION ID> --sum-raw"
