@@ -1,5 +1,5 @@
 ---
-description: Show persistent prompt history (survives /exit). Tool = claude|codex|opencode (default claude). Usage: /history [tool] sessions [project|all] [limit]  |  /history [tool] session=<id> [limit]  |  /history [tool] [project-substring|all] [limit]. No args -> defaults to "self" (current session, exact via CLAUDE_CODE_SESSION_ID for claude, heuristic for codex/opencode) instead of cwd. Default limit 40 (fits on screen); the command always also writes the unlimited result to a /tmp file and prints its path so nothing is ever lost off-screen.
+description: Show persistent prompt history (survives /exit). Tool = claude|codex|opencode (default claude). Usage: /history [tool] sessions [project|all] [limit]  |  /history [tool] session=<id> [limit]  |  /history [tool] [project-substring|all] [limit]. No args -> defaults to "self" (current session, exact via CLAUDE_CODE_SESSION_ID for claude, heuristic for codex/opencode) instead of cwd. Default limit 40 (fits on screen); the command always also writes the unlimited result to a file in ~/.local/state/agent-history/ (kept 7 days) and prints its path so nothing is ever lost off-screen.
 ---
 Run this exact shell command via the bash tool:
 

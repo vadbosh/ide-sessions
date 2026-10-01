@@ -292,12 +292,13 @@ agent-history claude                    # this session's prompts (the default)
 agent-history claude /srv/app 100       # every session whose directory contains /srv/app
 agent-history codex sessions all        # sessions: first/last time, id, prompt count, directory
 agent-history opencode session=ses_fa66 # one session, by any fragment of its id
-agent-history claude all --file         # write to a /tmp file, print only its path
+agent-history claude all --file         # write to a file, print only its path
 ```
 
-Every run also writes the unlimited result to a file in `/tmp` and prints its
-path on the first line, so nothing clipped off the screen is lost. Each run
-removes the ones older than an hour.
+Every run also writes the unlimited result to a file in
+`~/.local/state/agent-history/` (mode 600: prompts can quote secrets) and prints
+its path on the first line, so nothing clipped off the screen is lost. Files
+older than 7 days are removed on the next run.
 
 "This session" is exact in Claude Code (`CLAUDE_CODE_SESSION_ID`). Codex and
 opencode pass no session id to a tool, so there it is the session that wrote

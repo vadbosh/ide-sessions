@@ -27,7 +27,7 @@ agent-history codex session=<id-substring> [limit]
 - `all` as second arg → no project filter, all cwd's mixed.
 - Third arg → limit (default 40).
 - Without `--file`, every run also writes the *unlimited* result to a
-  side `/tmp` file and prints a trailing `[FULL history: N entries -> path]`
+  side file in `~/.local/state/agent-history/` (kept 7 days) and prints a trailing `[FULL history: N entries -> path]`
   line, so nothing shown on screen is ever actually clipped/lost.
 - `sessions` → list sessions instead of entries: first/last time, session
   id, entry count, cwd. Use this first when the user wants a specific
@@ -53,6 +53,6 @@ strip the ANSI colour codes, do not summarize or reformat it. The tool
 output is collapsed in the user's terminal ("Ran 1 shell command"), so a
 reply without the output shows them nothing.
 The script also supports a trailing `--file` flag (writes to a unique
-`/tmp/agent-history-<tool>-<pid>-<random>.txt` and prints only the path)
+`~/.local/state/agent-history/agent-history-<tool>-<pid>-<random>.txt` and prints only the path)
 for cases where the direct dump is too large or noisy — use only if the
 user explicitly asks for it.

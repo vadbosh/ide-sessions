@@ -88,7 +88,9 @@ install_file() {     # install_file SRC DST [MODE] [BACKUP_DIR]
             say "    ~ $(tilde "$dst")"
         elif [ -n "$bdir" ]; then
             mkdir -p "$bdir"
-            cp -p "$dst" "$bdir/$(basename "$(dirname "$dst")")-$(basename "$dst").bak.$STAMP"
+            # the whole path, flattened: three assistants' copies of one skill
+            # share a file name and must not overwrite each other's backup
+            cp -p "$dst" "$bdir/$(tilde "$dst" | sed 's#^~/##; s#^/##; s#/\.#/#g; s#^\.##; s#/#-#g').bak.$STAMP"
             say "    ~ $(tilde "$dst")  (backup in $(tilde "$bdir") — not in git)"
         else
             cp -p "$dst" "$dst.bak.$STAMP"

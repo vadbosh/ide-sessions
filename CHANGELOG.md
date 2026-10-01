@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.10.1
+
+**Backups of one skill from three assistants no longer overwrite each other.**
+0.10.0 named a backup after the file and its directory — `history-SKILL.md.bak.<time>`
+for the Claude Code, Codex and opencode copies alike, so the last one written
+won. The backup now carries the whole path, flattened
+(`claude-skills-history-SKILL.md.bak.<time>`). Found on the first real install,
+where the three copies happened to be identical and nothing was lost.
+
+**`agent-history` keeps its result files for 7 days, in the user's state
+directory.** They went to `/tmp` and were deleted after 60 minutes, and a `/tmp`
+file was not always visible from the user's own shell — the `FULL history` path
+printed on screen could be gone by the time it was opened. Now
+`~/.local/state/agent-history/` (`$XDG_STATE_HOME` moves it), directory 700,
+files 600 because prompts can quote secrets.
+
 ## 0.10.0
 
 **`agent-history`, the `history` skill and `/history` now ship here.**
@@ -23,7 +39,7 @@ by the current directory was out of date (it means the current session).
 
 Tests: agent-history over a sample history, and install into a temporary HOME
 — three runs identical, `--dry-run` writes nothing, `--uninstall` removes it
-all, a missing assistant is not created. 176 passed.
+all, a missing assistant is not created.
 
 ## 0.9.1
 

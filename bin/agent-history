@@ -9,7 +9,7 @@
 #   agent-history <claude|codex|opencode> [project-substring|all] [limit]
 #       -> show entries filtered by project path; no argument = the current session
 #
-# Optional trailing --file : write result to a unique /tmp file instead of stdout,
+# Optional trailing --file : write result to a unique file in $OUTDIR instead of stdout,
 # print only the path (for cases where direct dump is too large/noisy).
 set -euo pipefail
 
@@ -197,16 +197,22 @@ case "$TOOL" in
 esac
 }
 
-find /tmp -maxdepth 1 -name 'agent-history-*.txt' -mmin +60 -delete 2>/dev/null || true
+# Result files live in the user's state dir, not /tmp: a /tmp file was deleted
+# after 60 minutes and was not always visible from the user's own shell, so the
+# "FULL history" path printed on screen could already be gone when opened.
+# Kept 7 days; mode 600 because prompts can quote secrets.
+OUTDIR="${XDG_STATE_HOME:-$HOME/.local/state}/agent-history"
+mkdir -p "$OUTDIR" && chmod 700 "$OUTDIR"
+find "$OUTDIR" -maxdepth 1 -name 'agent-history-*.txt' -mtime +7 -delete 2>/dev/null || true
 
 if [ "$FILE_MODE" = "1" ]; then
-  OUT=$(mktemp "/tmp/agent-history-${TOOL}-$$-XXXXXX.txt")
+  OUT=$(mktemp "$OUTDIR/agent-history-${TOOL}-$$-XXXXXX.txt")
   run_query > "$OUT"
   echo "$OUT"
 else
   # always dump the unlimited result to a file on the side, so nothing shown
   # on screen (clipped by terminal height) is ever actually lost
-  FULL=$(mktemp "/tmp/agent-history-${TOOL}-$$-XXXXXX-full.txt")
+  FULL=$(mktemp "$OUTDIR/agent-history-${TOOL}-$$-XXXXXX-full.txt")
   SAVED_LIMIT="$LIMIT"
   LIMIT=999999999
   run_query > "$FULL"

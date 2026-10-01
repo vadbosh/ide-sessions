@@ -904,7 +904,7 @@ with open(sys.argv[1], "w") as f:
         f.write(json.dumps({"sessionId": sid, "project": proj, "display": text,
                             "timestamp": 1790000000000 + i * 60000}) + "\n")
 PY
-ah() { env -u CLAUDE_CODE_SESSION_ID HOME="$AH_HOME" "$ROOT/bin/agent-history" "$@" 2>&1 | sed 's/\x1b\[[0-9;]*m//g'; }
+ah() { env -u CLAUDE_CODE_SESSION_ID -u XDG_STATE_HOME HOME="$AH_HOME" "$ROOT/bin/agent-history" "$@" 2>&1 | sed 's/\x1b\[[0-9;]*m//g'; }
 out="$(ah claude sessions all 5)"
 contains "agent-history: sessions lists the session"         "$out" "aaaa1111-0000-0000-0000-000000000001"
 contains "agent-history: sessions counts entries per session" "$out" "n=2"
@@ -912,6 +912,12 @@ out="$(ah claude /work/repo 10)"
 contains "agent-history: a project filter keeps its entries" "$out" "почини парсер"
 absent   "agent-history: a project filter drops the others"  "$out" "unrelated ask"
 contains "agent-history: every run names the full-history file" "$out" "[FULL history: 2 entries"
+if ls "$AH_HOME/.local/state/agent-history/"agent-history-claude-*-full.txt >/dev/null 2>&1 \
+   && [ "$(stat -c %a "$AH_HOME/.local/state/agent-history")" = 700 ]; then
+    ok "agent-history: the full-history file is in the state dir, mode 700"
+else
+    nope "agent-history: the full-history file is in the state dir, mode 700" "$(ls -la "$AH_HOME/.local/state" 2>&1)"
+fi
 out="$(ah claude session=bbbb2222)"
 contains "agent-history: session=<fragment> finds one session" "$out" "unrelated ask"
 if "$ROOT/bin/agent-history" --help >/dev/null 2>&1; then ok "agent-history: --help exits 0"
@@ -953,8 +959,14 @@ else nope "install: codex gets no command"; fi
 if [ "$(stat -c %a "$IN_HOME/.claude/skills/history/SKILL.md")" = 644 ]; then ok "install: a skill file is not made executable"
 else nope "install: a skill file is not made executable" "$(stat -c %a "$IN_HOME/.claude/skills/history/SKILL.md")"; fi
 printf 'hand edit\n' > "$IN_HOME/.claude/skills/history/SKILL.md"
+printf 'other edit\n' > "$IN_HOME/.codex/skills/history/SKILL.md"
 inst
-if ls "$IN_HOME/.local/state/ide-sessions/backups/"history-SKILL.md.bak.* >/dev/null 2>&1 \
+if [ "$(ls "$IN_HOME/.local/state/ide-sessions/backups/" | wc -l)" -eq 2 ]; then
+    ok "install: two assistants' edited copies of one skill get two backups"
+else
+    nope "install: two assistants' edited copies of one skill get two backups" "$(ls "$IN_HOME/.local/state/ide-sessions/backups/")"
+fi
+if ls "$IN_HOME/.local/state/ide-sessions/backups/"claude-skills-history-SKILL.md.bak.* >/dev/null 2>&1 \
    && [ -z "$(find "$IN_HOME/.claude" -name '*.bak.*')" ]; then
     ok "install: a hand-edited skill is backed up outside the assistant's directory"
 else
