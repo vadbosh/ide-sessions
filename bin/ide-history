@@ -1,0 +1,890 @@
+#!/usr/bin/env bash
+#
+# ide-history — what was asked in Claude Code, Codex and opencode sessions.
+# Reads the prompt history each IDE keeps across sessions, and the session
+# transcripts for the whole conversation. Read-only: nothing here writes to an
+# IDE's storage.
+#
+# Four questions, four shapes:
+#   what did I type in this one session     -> --id, the id the *-sessions tools show
+#   what was said in it, replies included   -> --id ID --full
+#   in which session did I ask about X      -> --grep TEXT
+#   which sessions are there                -> sessions
+#
+# Not named `history`: that is a bash builtin, and in a shell the builtin wins
+# over any file on PATH — `history --id` would never reach this script.
+#
+# Every listing opens with a line that says what it is: which session or which
+# filter, which IDEs, and how many rows of how many are shown. The rows
+# themselves are capped (-n), so the uncapped result goes to a file and the
+# heading names it: nothing cut off the screen is lost.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+ide-history — prompts and conversations of Claude Code, Codex and opencode sessions
+
+ONE SESSION
+  ide-history --id ID               the prompts you typed in that session, oldest first
+                                    ID = the id claude-sessions, codex-sessions or
+                                    opencode-sessions show; a unique prefix is enough.
+                                    The IDE is found from the id.
+  ide-history --id ID --full        the conversation: your prompts and the assistant's
+                                    replies. Tool calls and their output are left off
+                                    the screen; the file named in the heading holds
+                                    EVERYTHING — reasoning, every tool call with its
+                                    arguments, every tool output, what the IDE injected.
+  ide-history                       this session: the one the command runs inside.
+                                    Claude Code and Codex say which it is; opencode
+                                    does not, so its most recently active session is
+                                    taken. Outside an assistant: give --id, or --ide
+                                    for that IDE's most recent session.
+
+ACROSS SESSIONS
+  ide-history --grep TEXT           every prompt containing TEXT (any case), with the
+                                    session id to pass to --id
+  ide-history sessions              sessions with prompts: first/last prompt, IDE,
+                                    prompt count, id, directory; newest last
+  ide-history SUBSTRING             every prompt typed in a directory containing SUBSTRING
+                                    (these listings show one line per prompt, cut at 160
+                                    characters; the file has the whole text)
+  ide-history -p                    every prompt typed in this directory or below it
+
+FILTERS
+  --ide claude|codex|opencode       one IDE only                      (default: all)
+  --since YYYY-MM-DD                from this date
+  --until YYYY-MM-DD                up to this date, inclusive
+  -p                                this directory and below; SUBSTRING = any directory
+                                    containing it (sessions, --grep and the plain listing)
+  -n N                              last N rows; 0 = all              (default: 40)
+  --json                            the records as JSON instead of the listing; every
+                                    record that matches, -n does not cut it
+
+EXAMPLES  (the same form for every IDE)
+  ide-history --id 84283b1c                 a Claude Code session
+  ide-history --id 01a0b455 --full          a Codex session, the whole conversation
+  ide-history --id ses_f4ba6fcd -n 0        an opencode session, every prompt
+  ide-history --grep terraform --since 2026-09-01
+  ide-history sessions --ide codex -n 10
+  ide-history -p --ide claude               this project's prompts, Claude Code only
+  --ide with --id only narrows a prefix that sessions of two IDEs share.
+
+OUTPUT
+  Times are local. A prompt of several lines keeps them, indented.
+  Credentials are masked on the screen and in --json (<REDACTED:N>, as --sum
+  does), because an assistant's /history puts this output into its reply. The
+  file keeps the text as typed.
+  The uncapped result is written to ~/.local/state/ide-history/ ($XDG_STATE_HOME
+  moves it), mode 600 because prompts can quote secrets; files older than 7 days
+  are removed on the next run.
+
+Reads ~/.claude ($CLAUDE_CONFIG_DIR), ~/.codex ($CODEX_HOME) and
+~/.local/share/opencode ($OPENCODE_DATA_DIR). Needs python3.
+EOF
+}
+
+die() { printf 'ide-history: %s\n' "$1" >&2; exit "${2:-2}"; }
+
+# --id, --grep and sessions answer different questions; the last one given
+# used to win silently, so `--id X --grep Y` searched and never showed X.
+set_mode() {
+  [ -z "$mode" ] || [ "$mode" = "$1" ] || die "--id, --grep and sessions are separate questions; give one"
+  mode="$1"
+}
+
+# ── arguments ────────────────────────────────────────────────────────────────
+
+mode=""
+full=0
+ide=""
+sid=""
+pattern=""
+since=""
+until_d=""
+limit=40
+here=0
+substr=""
+json=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h | --help | help) usage; exit 0 ;;
+    --id) [ -n "${2:-}" ] || die "--id needs a session id"; set_mode id; sid="$2"; shift ;;
+    --full) full=1 ;;
+    --grep) [ -n "${2:-}" ] || die "--grep needs the text to look for"; set_mode grep; pattern="$2"; shift ;;
+    sessions) set_mode sessions ;;
+    --ide) [ $# -ge 2 ] || die "--ide needs claude, codex or opencode"; ide="$2"; shift ;;
+    --since) [ $# -ge 2 ] || die "--since needs a date"; since="$2"; shift ;;
+    --until) [ $# -ge 2 ] || die "--until needs a date"; until_d="$2"; shift ;;
+    -n) [ $# -ge 2 ] || die "-n needs a number"; limit="$2"; shift ;;
+    -p) here=1 ;;
+    --json) json=1 ;;
+    --file) die "--file is gone: every listing already writes the uncapped result to a file and names it" ;;
+    session=*) die "'$1' is gone. One session: ide-history --id ${1#session=}" ;;
+    claude | codex | opencode)
+      die "the IDE is no longer the first word. One IDE: --ide $1; one session: --id ID" ;;
+    -*) printf 'ide-history: unknown option: %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
+    *) [ -z "$substr" ] || die "one directory filter at a time: '$substr' and '$1'"; substr="$1" ;;
+  esac
+  shift
+done
+
+case "$ide" in "" | claude | codex | opencode) ;; *) die "unknown IDE: $ide (claude, codex or opencode)" ;; esac
+case "$limit" in '' | *[!0-9]*) die "-n takes a number, got: $limit" ;; esac
+for d in "$since" "$until_d"; do
+  [ -z "$d" ] || [[ "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "a date is YYYY-MM-DD, got: $d"
+done
+[ "$full" = 0 ] || [ "$mode" = "id" ] || [ -z "$mode" ] || die "--full shows one session: --id ID --full"
+if [ -z "$mode" ]; then
+  if [ "$here" = 1 ] || [ -n "$substr" ]; then mode="prompts"; else mode="self"; fi
+fi
+[ "$here" = 0 ] || [ -z "$substr" ] || die "-p and a directory substring are two filters on one thing; give one"
+
+command -v python3 >/dev/null 2>&1 || die "python3 not found. Install it: apt install python3 (or brew install python@3.12)" 127
+
+# Result files live in the user's state dir, not /tmp: a /tmp file can be gone
+# before it is opened and is not always visible from the user's own shell.
+# Mode 600 because prompts can quote secrets.
+outfile=""
+if [ "$json" = 0 ]; then
+  OUTDIR="${XDG_STATE_HOME:-$HOME/.local/state}/ide-history"
+  mkdir -p "$OUTDIR" && chmod 700 "$OUTDIR"
+  find "$OUTDIR" -maxdepth 1 -name 'ide-history-*.txt' -mtime +7 -delete 2>/dev/null || true
+  outfile="$(mktemp "$OUTDIR/ide-history-$mode-$(date +%Y%m%d-%H%M%S)-XXXXXX.txt")"
+  chmod 600 "$outfile"
+fi
+
+exec python3 - "$mode" "$full" "$ide" "$sid" "$pattern" "$since" "$until_d" "$limit" \
+  "$here" "$substr" "$json" "$outfile" "$PWD" <<'PY'
+import datetime, glob, json, os, re, sqlite3, sys
+
+(MODE, FULL, IDE, SID, PATTERN, SINCE, UNTIL, LIMIT, HERE, SUBSTR, JSON,
+ OUTFILE, CWD) = sys.argv[1:14]
+FULL, LIMIT, HERE, JSON = FULL == '1', int(LIMIT), HERE == '1', JSON == '1'
+
+HOME = os.path.expanduser('~')
+CLAUDE = os.environ.get('CLAUDE_CONFIG_DIR') or os.path.join(HOME, '.claude')
+CODEX = os.environ.get('CODEX_HOME') or os.path.join(HOME, '.codex')
+OPENCODE_DB = os.path.join(os.environ.get('OPENCODE_DATA_DIR')
+                           or os.path.join(HOME, '.local/share/opencode'), 'opencode.db')
+ALL_IDES = ('claude', 'codex', 'opencode')
+IDES = (IDE,) if IDE else ALL_IDES
+NAME = {'claude': 'Claude Code', 'codex': 'Codex', 'opencode': 'opencode'}
+
+
+def die(msg, code=1):
+    if msg:
+        sys.stderr.write('ide-history: %s\n' % msg)
+    if OUTFILE:
+        try:
+            os.remove(OUTFILE)
+        except OSError:
+            pass
+    sys.exit(code)
+
+
+def when(ep, seconds=False):
+    if not ep:
+        return '????-??-?? ??:??'
+    return datetime.datetime.fromtimestamp(ep).strftime(
+        '%Y-%m-%d %H:%M:%S' if seconds else '%Y-%m-%d %H:%M')
+
+
+def iso_epoch(ts):
+    try:
+        return datetime.datetime.fromisoformat((ts or '').replace('Z', '+00:00')).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def rec(ide, sid, ep, project, kind, text, label=''):
+    # kind: prompt (typed by the user), reply (the assistant's text), and the
+    # ones only the file shows: reasoning, call, output, injected.
+    return {'ide': ide, 'session': sid, 'ep': ep, 'project': project or '',
+            'kind': kind, 'label': label, 'text': text or ''}
+
+
+def jsonl(path):
+    try:
+        fh = open(path, errors='replace')
+    except OSError:
+        return
+    with fh:
+        for line in fh:
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(d, dict):
+                yield d
+
+
+# ── what the IDE wrote, not the user ────────────────────────────────────────
+# Claude Code: slash commands, hook output, skill bodies. Codex: the
+# environment, AGENTS.md and the skills list prepended to the first message.
+# On the screen these are dropped or, for a slash command, shown as typed;
+# the file keeps them, marked as injected.
+REMINDER = re.compile(r'<system-reminder>.*?</system-reminder>', re.S)
+CLAUDE_NOISE = ('<local-command-', '<bash-stdout>', '<bash-stderr>',
+                'Caveat: The messages below were generated',
+                'Base directory for this skill:')
+CMD_NAME = re.compile(r'<command-name>(.*?)</command-name>', re.S)
+CMD_ARGS = re.compile(r'<command-args>(.*?)</command-args>', re.S)
+BASH_IN = re.compile(r'<bash-input>(.*?)</bash-input>', re.S)
+
+
+def claude_clean(t):
+    """The text as the user typed it, or '' when the IDE wrote it."""
+    t = REMINDER.sub('', t or '').strip()
+    m = CMD_NAME.search(t)
+    if m:
+        a = CMD_ARGS.search(t)
+        return (m.group(1).strip() + ' ' + (a.group(1).strip() if a else '')).strip()
+    m = BASH_IN.search(t)
+    if m:
+        return '! ' + m.group(1).strip()
+    for p in CLAUDE_NOISE:
+        if t.startswith(p):
+            return ''
+    return t
+
+
+CODEX_NOISE = ('<environment_context>', '<user_instructions>', '<stdin>',
+               '# AGENTS.md', '<plan_tool_description>', '<skills_instructions>',
+               '<multi_agent_mode>', 'You have 1 past memory file')
+CODEX_TAGS = re.compile(r'<(environment_context|user_instructions|skills_instructions)>'
+                        r'.*?</\1>', re.S)
+AGENTS_MD = re.compile(r'# AGENTS\.md instructions.*?</INSTRUCTIONS>', re.S)
+
+
+def codex_clean(t):
+    t = AGENTS_MD.sub('', CODEX_TAGS.sub('', t or '')).strip()
+    for p in CODEX_NOISE:
+        if t.startswith(p):
+            return ''
+    return t
+
+
+def blocks(content, kinds=('input_text', 'output_text', 'text')):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return '\n'.join(b.get('text', '') for b in content
+                         if isinstance(b, dict) and b.get('type') in kinds)
+    return ''
+
+
+def as_text(v):
+    if isinstance(v, str):
+        return v
+    if isinstance(v, list):
+        return '\n'.join(as_text(x.get('text', x) if isinstance(x, dict) else x) for x in v)
+    return json.dumps(v, ensure_ascii=False)
+
+
+# What reaches the screen is masked; the file is not. The history skill and
+# /history put this output into the assistant's reply, so an unmasked key in a
+# prompt would be written into one more transcript every time it is shown. The
+# file is the user's own record, mode 600, and keeps the text as typed.
+#
+# The block below is a verbatim copy of the one in the three *-sessions
+# scripts; tests/test_sessions.sh fails when the four copies differ.
+# ── redaction ───────────────────────────────────────────────────────────────
+#
+# A session can contain a credential: pasted into a prompt, echoed back in a
+# reply, printed inside an error. The digest copies reply text, so without this
+# a key would travel three ways at once — to whatever API summarizes (not
+# necessarily the vendor the session itself ran on), into a cache file on disk,
+# and onto the terminal of the session asking for the summary, which is itself
+# being recorded.
+#
+# So masking happens here, before anything leaves the process, and --sum-raw
+# shows exactly what would have been sent. Two tiers: a shape that can only be
+# a token is masked anywhere, while a shape that merely could
+# be one — 40 characters of base62, 32 of hex — is masked only where a
+# credential word stands beside it. Otherwise every git SHA in the session
+# would come back as <REDACTED>.
+PROVIDER = re.compile(
+    r'AKIA[0-9A-Z]{16}'
+    r'|(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9]{36,}'
+    r'|github_pat_[A-Za-z0-9_]{22,}'
+    r'|glpat-[A-Za-z0-9_-]{20,}'
+    r'|xox[baprs]-[A-Za-z0-9-]{10,}'
+    r'|tvly-[A-Za-z0-9-]{10,}'
+    r'|AIza[A-Za-z0-9_-]{35}'
+    r'|(?:sk|rk)_live_[A-Za-z0-9]{20,}'
+    r'|sk-(?:or-v1-|proj-|ant-)?[A-Za-z0-9-]{20,}'
+    r'|ATATT[A-Za-z0-9_=.-]{20,}'
+    r'|at-[A-Za-z0-9]{30,}'
+    r'|hf_[A-Za-z0-9]{30,}'
+    r'|dckr_pat_[A-Za-z0-9_-]{20,}'
+    r'|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*'
+    r'|-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----')
+
+# Credentials inside a URL. Separate from the list above so the scheme and host
+# survive: postgres://admin:pw@db/app is worth reading as "postgres, db, app".
+URL_CRED = re.compile(r'://[^/:@\s]+:([^/:@\s]{3,})@')
+
+# A label and the value after it. The label is what a secret is called; the
+# value is only required to be long, because its shape says nothing.
+#
+# Huawei Cloud and OpenStack are the reason this tier exists in this form. Their
+# access key is 20 characters of upper case and digits and the secret 40 of
+# base62 — the same shapes as a git SHA, a build id, half the identifiers in
+# ordinary output — so no pattern can take them without masking everything. The
+# variable name can, and it is right there on the line. Jira reaches here too
+# when a token is passed as --token rather than carrying its ATATT prefix.
+LABEL = (r'(?:--?)?(?:pass|passwd|password|passphrase|pass-phrase'
+         r'|token|secret|api[-_]?key|apikey|auth[-_]?token|access[-_]?key'
+         r'|secret[-_]?key|client[-_]?secret|private[-_]?key|credential'
+         r'|jira[-_]?(?:api[-_]?)?token'
+         r'|hw[-_]?(?:access|secret)(?:[-_]?key)?'
+         r'|huaweicloud?[-_]?[a-z_]*key'
+         r'|os[-_](?:access|secret)[-_]?key'
+         # …_AK and …_SK: Huawei's own SDKs spell the pair that way, and the
+         # value carries no prefix at all, so the suffix is the whole signal.
+         r'|(?:hw|huawei|huaweicloud|obs|os)[-_][a-z_0-9]*[-_]?[as]k)s?[A-Z0-9_]*')
+VALUE = r'[A-Za-z0-9+/=_.~-]{16,}'
+
+# Assignment first — NAME=value, NAME: value, Authorization: Bearer value —
+# then the flag form, --pass value. Both keep the label readable: a summary that
+# hides which credential was involved answers nothing.
+NAMED = re.compile(r'(%s)(\s*[=:]\s*(?:Bearer\s+)?)([\'"]?)(%s)' % (LABEL, VALUE), re.I)
+FLAGGED = re.compile(r'(%s)(\s+)([\'"]?)(%s)' % (LABEL, VALUE), re.I)
+
+# A line that talks about credentials at all. Only there is a long anonymous
+# run treated as a secret.
+CRED_WORD = re.compile(
+    r'token|secret|password|passwd|credential|api[ _-]?key|access[ _-]?key'
+    r'|huawei|openstack|jira|токен|пароль|секрет|ключ', re.I)
+HIGH_ENTROPY = re.compile(r'\b[A-Za-z0-9_-]{40,}\b|\b[A-Fa-f0-9]{32,}\b')
+
+def mask(m):
+    return '<REDACTED:%d>' % len(m.group(0))
+
+def redact(text):
+    out = []
+    for line in (text or '').splitlines():
+        line = PROVIDER.sub(mask, line)
+        line = URL_CRED.sub(
+            lambda m: '://<REDACTED:%d>@' % len(m.group(1)), line)
+        # A value already masked is left alone: masking the marker again would
+        # overwrite the real length with the marker's own.
+        for pat in (NAMED, FLAGGED):
+            line = pat.sub(
+                lambda m: m.group(0) if m.group(4).startswith('<REDACTED:')
+                else '%s%s%s<REDACTED:%d>' % (m.group(1), m.group(2),
+                                              m.group(3), len(m.group(4))),
+                line)
+        if CRED_WORD.search(line):
+            line = HIGH_ENTROPY.sub(mask, line)
+        out.append(line)
+    return '\n'.join(out)
+
+
+# ── Claude Code ──────────────────────────────────────────────────────────────
+
+def claude_prompts():
+    for d in jsonl(os.path.join(CLAUDE, 'history.jsonl')):
+        sid = d.get('sessionId')
+        if sid:
+            yield rec('claude', sid, (d.get('timestamp') or 0) / 1000.0,
+                      d.get('project'), 'prompt', d.get('display'))
+
+
+def claude_transcripts():
+    out = {}
+    for p in glob.glob(os.path.join(CLAUDE, 'projects', '*', '*.jsonl')):
+        out.setdefault(os.path.basename(p)[:-6], p)
+    return out
+
+
+def claude_conversation(sid, path):
+    for d in jsonl(path):
+        typ = d.get('type')
+        if typ not in ('user', 'assistant'):
+            continue
+        ep, cwd = iso_epoch(d.get('timestamp')), d.get('cwd')
+        side = 'subagent ' if d.get('isSidechain') else ''
+        content = (d.get('message') or {}).get('content')
+        items = [{'type': 'text', 'text': content}] if isinstance(content, str) else (content or [])
+        for b in items:
+            if not isinstance(b, dict):
+                continue
+            bt = b.get('type')
+            if bt == 'text':
+                raw = b.get('text') or ''
+                if typ == 'assistant':
+                    yield rec('claude', sid, ep, cwd, 'injected' if side else 'reply', raw,
+                              side + 'assistant')
+                    continue
+                typed = '' if (side or d.get('isMeta')) else claude_clean(raw)
+                if typed:
+                    yield rec('claude', sid, ep, cwd, 'prompt', typed)
+                    if typed != raw.strip():
+                        yield rec('claude', sid, ep, cwd, 'injected', raw, side + 'as sent')
+                else:
+                    yield rec('claude', sid, ep, cwd, 'injected', raw, side + 'injected')
+            elif bt == 'thinking':
+                yield rec('claude', sid, ep, cwd, 'reasoning', b.get('thinking'), side + 'reasoning')
+            elif bt == 'tool_use':
+                yield rec('claude', sid, ep, cwd, 'call',
+                          json.dumps(b.get('input'), ensure_ascii=False, indent=1),
+                          side + 'tool call ' + (b.get('name') or '?'))
+            elif bt == 'tool_result':
+                yield rec('claude', sid, ep, cwd, 'output', as_text(b.get('content')),
+                          side + ('tool error' if b.get('is_error') else 'tool output'))
+            elif bt == 'image':
+                yield rec('claude', sid, ep, cwd, 'injected', '[image]', side + 'image')
+
+
+# ── Codex ────────────────────────────────────────────────────────────────────
+
+UUID = re.compile(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$')
+_codex_rollouts = None
+
+
+def codex_rollouts():
+    """session id -> (rollout path, cwd). The id is in the file name; the cwd
+    is in the first line, so only that line is read."""
+    global _codex_rollouts
+    if _codex_rollouts is None:
+        _codex_rollouts = {}
+        for p in glob.glob(os.path.join(CODEX, 'sessions', '**', 'rollout-*.jsonl'), recursive=True):
+            m = UUID.search(p)
+            if not m:
+                continue
+            cwd = ''
+            try:
+                with open(p, errors='replace') as fh:
+                    first = json.loads(fh.readline() or '{}')
+                cwd = (first.get('payload') or {}).get('cwd') or ''
+            except (OSError, ValueError):
+                pass
+            _codex_rollouts[m.group(1)] = (p, cwd)
+    return _codex_rollouts
+
+
+def codex_prompts():
+    ro = codex_rollouts()
+    for d in jsonl(os.path.join(CODEX, 'history.jsonl')):
+        sid = d.get('session_id')
+        if sid:
+            yield rec('codex', sid, float(d.get('ts') or 0), ro.get(sid, ('', ''))[1],
+                      'prompt', d.get('text'))
+
+
+def codex_conversation(sid, path):
+    # Two rollout formats are in circulation: up to codex-cli 0.135 the turns
+    # are event_msg/user_message and agent_message, later response_item/message.
+    # A file written across an upgrade holds both, so the newer form wins and
+    # the older is used only when the file has nothing else.
+    new, old, cwd = [], [], ''
+    for d in jsonl(path):
+        p = d.get('payload') or {}
+        kind, sub, ep = d.get('type'), p.get('type'), iso_epoch(d.get('timestamp'))
+        if kind in ('session_meta', 'turn_context'):
+            cwd = p.get('cwd') or cwd
+            continue
+        if kind == 'response_item' and sub == 'message':
+            role, raw = p.get('role'), blocks(p.get('content'))
+            if role == 'assistant':
+                new.append(rec('codex', sid, ep, cwd, 'reply', raw, 'assistant'))
+            elif role == 'user' and codex_clean(raw):
+                new.append(rec('codex', sid, ep, cwd, 'prompt', codex_clean(raw)))
+                if codex_clean(raw) != raw.strip():
+                    new.append(rec('codex', sid, ep, cwd, 'injected', raw, 'as sent'))
+            else:
+                new.append(rec('codex', sid, ep, cwd, 'injected', raw, role or 'injected'))
+        elif kind == 'response_item' and sub in ('function_call', 'custom_tool_call'):
+            args = p.get('arguments') if sub == 'function_call' else p.get('input')
+            try:
+                args = json.dumps(json.loads(args), ensure_ascii=False, indent=1)
+            except (TypeError, ValueError):
+                args = as_text(args)
+            new.append(rec('codex', sid, ep, cwd, 'call', args, 'tool call ' + (p.get('name') or '?')))
+        elif kind == 'response_item' and sub in ('function_call_output', 'custom_tool_call_output'):
+            new.append(rec('codex', sid, ep, cwd, 'output', as_text(p.get('output')), 'tool output'))
+        elif kind == 'response_item' and sub == 'reasoning':
+            txt = blocks(p.get('summary'), ('summary_text', 'text')) or blocks(p.get('content'))
+            if txt:
+                new.append(rec('codex', sid, ep, cwd, 'reasoning', txt, 'reasoning'))
+        elif kind == 'event_msg' and sub in ('user_message', 'agent_message'):
+            raw = p.get('message') or ''
+            if sub == 'agent_message':
+                old.append(rec('codex', sid, ep, cwd, 'reply', raw, 'assistant'))
+            elif codex_clean(raw):
+                old.append(rec('codex', sid, ep, cwd, 'prompt', codex_clean(raw)))
+    has_turns = any(r['kind'] in ('prompt', 'reply') for r in new)
+    return new if has_turns or not old else old + new
+
+
+# ── opencode ─────────────────────────────────────────────────────────────────
+_oc = None
+
+
+def oc():
+    global _oc
+    if _oc is None:
+        if not os.path.isfile(OPENCODE_DB):
+            return None
+        _oc = sqlite3.connect('file:%s?mode=ro' % OPENCODE_DB, uri=True, timeout=10)
+    return _oc
+
+
+def opencode_sessions():
+    con = oc()
+    if con is None:
+        return {}
+    return {sid: d for sid, d in con.execute('SELECT id, directory FROM session')}
+
+
+def opencode_prompts():
+    con = oc()
+    if con is None:
+        return
+    for sid, created, directory, data in con.execute("""
+            SELECT s.id, p.time_created, s.directory, p.data
+            FROM part p JOIN message m ON m.id = p.message_id
+                        JOIN session s ON s.id = p.session_id
+            WHERE json_extract(m.data, '$.role') = 'user'
+              AND json_extract(p.data, '$.type') = 'text'
+            ORDER BY p.time_created, p.id"""):
+        try:
+            d = json.loads(data)
+        except ValueError:
+            continue
+        if not d.get('synthetic'):
+            yield rec('opencode', sid, (created or 0) / 1000.0, directory, 'prompt', d.get('text'))
+
+
+def opencode_conversation(sid, directory):
+    con = oc()
+    for role, created, data in con.execute("""
+            SELECT json_extract(m.data, '$.role'), p.time_created, p.data
+            FROM part p JOIN message m ON m.id = p.message_id
+            WHERE p.session_id = ?
+            ORDER BY p.time_created, p.id""", (sid,)):
+        try:
+            d = json.loads(data)
+        except ValueError:
+            continue
+        ep, t = (created or 0) / 1000.0, d.get('type')
+        if t == 'text':
+            if d.get('synthetic'):
+                yield rec('opencode', sid, ep, directory, 'injected', d.get('text'), 'injected')
+            elif role == 'user':
+                yield rec('opencode', sid, ep, directory, 'prompt', d.get('text'))
+            else:
+                yield rec('opencode', sid, ep, directory, 'reply', d.get('text'), 'assistant')
+        elif t == 'reasoning':
+            yield rec('opencode', sid, ep, directory, 'reasoning', d.get('text'), 'reasoning')
+        elif t == 'tool':
+            st = d.get('state') or {}
+            yield rec('opencode', sid, ep, directory, 'call',
+                      json.dumps(st.get('input'), ensure_ascii=False, indent=1),
+                      'tool call ' + (d.get('tool') or '?'))
+            if 'output' in st or 'error' in st:
+                yield rec('opencode', sid, ep, directory, 'output',
+                          as_text(st.get('output') if 'output' in st else st.get('error')),
+                          'tool output' if 'output' in st else 'tool error')
+        elif t == 'file':
+            yield rec('opencode', sid, ep, directory, 'injected',
+                      d.get('filename') or d.get('url') or '', 'file')
+
+
+# ── shared ───────────────────────────────────────────────────────────────────
+
+PROMPTS = {'claude': claude_prompts, 'codex': codex_prompts, 'opencode': opencode_prompts}
+
+
+def all_prompts():
+    out = []
+    for i in IDES:
+        out.extend(PROMPTS[i]())
+    return out
+
+
+def session_ids(ide):
+    """Every session id the IDE has: those with prompts in its history and
+    those with only a transcript (an old session, or one run with -p)."""
+    if ide == 'claude':
+        ids = set(claude_transcripts())
+    elif ide == 'codex':
+        ids = set(codex_rollouts())
+    else:
+        ids = set(opencode_sessions())
+    ids.update(r['session'] for r in PROMPTS[ide]())
+    return ids
+
+
+def date_ok(r):
+    if not (SINCE or UNTIL):
+        return True
+    day = when(r['ep'])[:10]
+    return (not SINCE or day >= SINCE) and (not UNTIL or day <= UNTIL)
+
+
+def dir_ok(r):
+    if HERE:
+        return r['project'] == CWD or r['project'].startswith(CWD.rstrip('/') + '/')
+    return not SUBSTR or SUBSTR in r['project']
+
+
+def indent(text, pad):
+    lines = (text or '').rstrip().split('\n')
+    return lines[0] + ''.join('\n' + pad + ln for ln in lines[1:])
+
+
+def flat(text, width=160):
+    # One prompt, one line on the screen; the file keeps the whole text.
+    t = ' '.join((text or '').split())
+    return t if len(t) <= width else t[:width - 1] + '…'
+
+
+
+def cap(rows):
+    return rows[-LIMIT:] if LIMIT and len(rows) > LIMIT else rows
+
+
+def emit_json(records):
+    out = [{k: redact(r[k]) if k == 'text' else r[k]
+            for k in ('ide', 'session', 'project', 'kind', 'label', 'text')}
+           | {'time': datetime.datetime.fromtimestamp(r['ep']).astimezone().isoformat()
+              if r['ep'] else None} for r in records]
+    json.dump(out, sys.stdout, ensure_ascii=False, indent=1)
+    sys.stdout.write('\n')
+
+
+def write_file(lines):
+    with open(OUTFILE, 'w') as fh:
+        fh.write('\n'.join(lines) + '\n')
+
+
+def counted(shown, total, noun, first, last):
+    if shown < total:
+        return 'last %d of %d %s, %s … %s  (-n 0 for all)' % (shown, total, noun, first, last)
+    if total == 1:
+        return 'one %s, %s' % (noun[:-1], first)
+    return 'all %d %s, %s … %s' % (total, noun, first, last)
+
+
+def scope():
+    bits = [NAME[IDE] if IDE else 'all IDEs']
+    if HERE:
+        bits.append('in %s and below' % CWD)
+    elif SUBSTR:
+        bits.append('directories containing "%s"' % SUBSTR)
+    if SINCE or UNTIL:
+        bits.append('%s … %s' % (SINCE or 'start', UNTIL or 'today'))
+    return ' · '.join(bits)
+
+
+# ── which session ────────────────────────────────────────────────────────────
+
+def resolve(prefix):
+    hits = []
+    for i in IDES:
+        hits.extend((i, s) for s in session_ids(i) if s.startswith(prefix))
+    exact = [h for h in hits if h[1] == prefix]
+    if exact:
+        return exact[0]
+    if not hits:
+        die('no session matches "%s"%s' % (prefix, ' in ' + NAME[IDE] if IDE else ''))
+    if len(hits) > 1:
+        last = {}
+        for r in all_prompts():
+            last[(r['ide'], r['session'])] = max(last.get((r['ide'], r['session']), 0), r['ep'])
+        hits.sort(key=lambda h: last.get(h, 0))
+        sys.stderr.write('ide-history: "%s" matches %d sessions — give more characters, or --ide:\n\n'
+                         % (prefix, len(hits)))
+        if len(hits) > 10:
+            sys.stderr.write('  … %d older not shown\n' % (len(hits) - 10))
+        for i, s in hits[-10:]:
+            sys.stderr.write('  %-9s %-38s last prompt %s\n' % (i, s, when(last.get((i, s), 0))))
+        die(None)
+    return hits[0]
+
+
+def self_session():
+    """(ide, session id, how it was found)."""
+    env = os.environ
+    ide = IDE or ('claude' if env.get('CLAUDE_CODE_SESSION_ID') else
+                  'codex' if env.get('CODEX_THREAD_ID') else
+                  'opencode' if env.get('OPENCODE') else '')
+    if not ide:
+        die('not running inside Claude Code, Codex or opencode, so there is no "this session".\n'
+            '  One session:    ide-history --id ID\n'
+            '  Sessions:       ide-history sessions\n'
+            '  Most recent:    ide-history --ide claude|codex|opencode', 2)
+    if ide == 'claude' and env.get('CLAUDE_CODE_SESSION_ID'):
+        return ide, env['CLAUDE_CODE_SESSION_ID'], 'this session'
+    if ide == 'codex' and env.get('CODEX_THREAD_ID'):
+        return ide, env['CODEX_THREAD_ID'], 'this session'
+    if ide == 'opencode':
+        con = oc()
+        row = con and con.execute('SELECT id FROM session WHERE parent_id IS NULL '
+                                  'ORDER BY time_updated DESC LIMIT 1').fetchone()
+        if row:
+            return ide, row[0], 'the most recently active opencode session'
+    else:
+        rows = sorted(PROMPTS[ide](), key=lambda r: r['ep'])
+        if rows:
+            return ide, rows[-1]['session'], 'the %s session with the latest prompt' % NAME[ide]
+    die('%s has no sessions here' % NAME[ide])
+
+
+def project_of(ide, sid, records):
+    for r in records:
+        if r['project']:
+            return r['project']
+    if ide == 'codex':
+        return codex_rollouts().get(sid, ('', ''))[1]
+    if ide == 'opencode':
+        return opencode_sessions().get(sid, '')
+    return ''
+
+
+def conversation(ide, sid):
+    if ide == 'claude':
+        path = claude_transcripts().get(sid)
+        return list(claude_conversation(sid, path)) if path else []
+    if ide == 'codex':
+        path = codex_rollouts().get(sid, ('', ''))[0]
+        return codex_conversation(sid, path) if path else []
+    if oc() is None:
+        return []
+    return list(opencode_conversation(sid, opencode_sessions().get(sid, '')))
+
+
+# ── modes ────────────────────────────────────────────────────────────────────
+
+def one_session(ide, sid, how):
+    if FULL:
+        # Claude Code keeps a thinking block whose text is withheld; an empty
+        # record says nothing, so it is not written.
+        records = [r for r in conversation(ide, sid) if date_ok(r) and r['text'].strip()]
+        if JSON:
+            return emit_json(records)
+        screen = [r for r in records if r['kind'] in ('prompt', 'reply')]
+        everything = []
+        for r in records:
+            everything.append('%s  %s' % (when(r['ep'], True), r['label'] or 'you'))
+            everything.append('  ' + indent(r['text'], '  '))
+        if not screen:
+            die('%s session %s: no transcript with a conversation was found' % (NAME[ide], sid))
+        write_file(everything)
+        shown = cap(screen)
+        print('Conversation of one session · %s · %s%s' % (NAME[ide], sid,
+              '' if how == 'by id' else ' (%s)' % how))
+        print('%s · your prompts and the assistant\'s replies; tool calls and their output are only in the file'
+              % (project_of(ide, sid, records) or '?'))
+        print(counted(len(shown), len(screen), 'messages', when(shown[0]['ep']), when(shown[-1]['ep'])))
+        print('Everything, tool calls and their output included (%d records): %s' % (len(records), OUTFILE))
+        print()
+        for r in shown:
+            print('── %s · %s' % ('you' if r['kind'] == 'prompt' else 'assistant', when(r['ep'])))
+            print(redact(r['text'].rstrip()))
+            print()
+        return
+
+    records = sorted((r for r in PROMPTS[ide]() if r['session'] == sid), key=lambda r: r['ep'])
+    source = 'prompt history'
+    if not records:
+        # A session older than the IDE's prompt log, or one whose prompts were
+        # never logged: the transcript still has what was typed.
+        records = [r for r in conversation(ide, sid) if r['kind'] == 'prompt']
+        source = 'transcript (no entries in the prompt history)'
+    records = [r for r in records if date_ok(r)]
+    if JSON:
+        return emit_json(records)
+    if not records:
+        write_file([])
+        print('Prompts of one session · %s · %s: no prompts recorded%s.' % (
+            NAME[ide], sid, ' in that period' if SINCE or UNTIL else ''))
+        return
+    rows = ['%s  %s' % (when(r['ep']), indent(r['text'], ' ' * 18)) for r in records]
+    write_file(rows)
+    shown = cap(rows)
+    first, last = records[-len(shown)]['ep'], records[-1]['ep']
+    print('Prompts of one session · %s · %s%s' % (NAME[ide], sid,
+          '' if how == 'by id' else ' (%s)' % how))
+    print('%s · from the %s' % (project_of(ide, sid, records) or '?', source))
+    print(counted(len(shown), len(rows), 'prompts', when(first), when(last)))
+    print('Uncapped: %s' % OUTFILE)
+    print()
+    print(redact('\n'.join(shown)))
+
+
+def listing(title, records, noun):
+    records = sorted(records, key=lambda r: r['ep'])
+    if JSON:
+        return emit_json(records)
+    if not records:
+        write_file([])
+        print('%s · %s: none.' % (title, scope()))
+        return
+    head = ['%s  %-8s %-12s [%s]  ' % (when(r['ep']), r['ide'], r['session'][:12], r['project'] or '?')
+            for r in records]
+    write_file([h + indent(r['text'], ' ' * 18) for h, r in zip(head, records)])
+    rows = [h + flat(r['text']) for h, r in zip(head, records)]
+    shown = cap(rows)
+    print('%s · %s' % (title, scope()))
+    print(counted(len(shown), len(rows), noun, when(records[-len(shown)]['ep']), when(records[-1]['ep'])))
+    print('Uncapped: %s' % OUTFILE)
+    print()
+    print(redact('\n'.join(shown)))
+
+
+def sessions():
+    agg = {}
+    for r in all_prompts():
+        if not dir_ok(r):
+            continue
+        a = agg.setdefault((r['ide'], r['session']),
+                           {'ide': r['ide'], 'session': r['session'], 'first': r['ep'],
+                            'last': r['ep'], 'n': 0, 'project': r['project']})
+        a['first'], a['last'] = min(a['first'], r['ep']), max(a['last'], r['ep'])
+        a['n'] += 1
+        a['project'] = r['project'] or a['project']
+    rows = sorted((a for a in agg.values()
+                   if (not SINCE or when(a['last'])[:10] >= SINCE)
+                   and (not UNTIL or when(a['first'])[:10] <= UNTIL)),
+                  key=lambda a: a['last'])
+    if JSON:
+        for a in rows:
+            a['first'], a['last'] = when(a['first']), when(a['last'])
+        json.dump(rows, sys.stdout, ensure_ascii=False, indent=1)
+        sys.stdout.write('\n')
+        return
+    if not rows:
+        write_file([])
+        print('Sessions with prompts · %s: none.' % scope())
+        return
+    lines = ['%s … %s  %-8s n=%-4d %s  [%s]' % (when(a['first']), when(a['last']),
+             a['ide'], a['n'], a['session'], a['project'] or '?') for a in rows]
+    write_file(lines)
+    shown = cap(lines)
+    print('Sessions with prompts · %s · newest last' % scope())
+    print(counted(len(shown), len(lines), 'sessions', when(rows[-len(shown)]['last']),
+                  when(rows[-1]['last'])))
+    print('Uncapped: %s' % OUTFILE)
+    print()
+    print('\n'.join(shown))
+
+
+if MODE == 'self':
+    one_session(*self_session())
+elif MODE == 'id':
+    ide, sid = resolve(SID)
+    one_session(ide, sid, 'by id')
+elif MODE == 'grep':
+    needle = PATTERN.lower()
+    listing('Prompts containing "%s"' % PATTERN,
+            [r for r in all_prompts() if needle in r['text'].lower() and dir_ok(r) and date_ok(r)],
+            'prompts')
+elif MODE == 'sessions':
+    sessions()
+else:
+    listing('Prompts', [r for r in all_prompts() if dir_ok(r) and date_ok(r)], 'prompts')
+PY

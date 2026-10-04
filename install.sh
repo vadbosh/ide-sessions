@@ -13,9 +13,11 @@
 # harmless — the others simply report that they found nothing. billing reads
 # all three through ccusage and says how to install it when it is missing.
 #
-# agent-history reads the prompt history all three IDEs keep across sessions;
-# the history skill (claude, codex, opencode) and the /history command (claude,
-# opencode — codex has no user commands) are how an assistant runs it.
+# ide-history reads the prompt history all three IDEs keep across sessions and
+# their transcripts; the history skill (claude, codex, opencode) and the
+# /history command (claude, opencode — codex has no user commands) are how an
+# assistant runs it. It replaced agent-history in 0.11.0: an agent-history this
+# script installed is removed, one edited by hand is left with a warning.
 #
 # Idempotent: re-running replaces only what changed. A file it overwrites is
 # backed up ONLY when that content is not already in the source repository — a
@@ -29,7 +31,8 @@ set -euo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${IDE_SESSIONS_BIN_DIR:-$HOME/.local/bin}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-COMMANDS="claude-sessions codex-sessions opencode-sessions billing agent-history"
+COMMANDS="claude-sessions codex-sessions opencode-sessions billing ide-history"
+RETIRED="agent-history"
 BACKUPS="${XDG_STATE_HOME:-$HOME/.local/state}/ide-sessions/backups"
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
@@ -42,7 +45,7 @@ while [ $# -gt 0 ]; do
         --dry-run)   DRY_RUN=1 ;;
         --uninstall) UNINSTALL=1 ;;
         --bin-dir)   BIN_DIR="${2:-}"; shift ;;
-        -h|--help)   sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
+        -h|--help)   sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
@@ -144,6 +147,16 @@ if [ "$UNINSTALL" -eq 1 ]; then
             say "    - $(tilde "$dst")"
         fi
     done < <(assistant_files)
+    for cmd in $RETIRED; do
+        dst="$BIN_DIR/$cmd"
+        [ -f "$dst" ] || continue
+        if [ "$DRY_RUN" -eq 1 ]; then
+            say "    would remove $(tilde "$dst")"
+        else
+            rm -f "$dst"
+            say "    - $(tilde "$dst")"
+        fi
+    done
     say ""
     say "  Cached summaries and the trash dir are left alone:"
     say "    $(tilde "${IDE_SESSIONS_SUM_CACHE:-$HOME/.cache/ide-sessions-summaries}")"
@@ -167,6 +180,22 @@ say "── commands ──"
 say "  $(tilde "$BIN_DIR")"
 for cmd in $COMMANDS; do
     install_file "$SRC/bin/$cmd" "$BIN_DIR/$cmd"
+done
+
+# A command an earlier release installed and this one replaced. Removed only
+# when its content is in git — i.e. it is exactly what an install wrote; a
+# copy edited by hand stays, and the warning says so.
+for cmd in $RETIRED; do
+    dst="$BIN_DIR/$cmd"
+    [ -f "$dst" ] || continue
+    if ! in_git_history "$dst"; then
+        warn "    ! $(tilde "$dst") — replaced by ide-history, but edited by hand: left in place"
+    elif [ "$DRY_RUN" -eq 1 ]; then
+        say "    would remove $(tilde "$dst")  (replaced by ide-history)"
+    else
+        rm -f "$dst"
+        say "    - $(tilde "$dst")  (replaced by ide-history)"
+    fi
 done
 
 say "── history skill and /history ──"
@@ -233,7 +262,7 @@ done
 [ "$failed" -eq 0 ] || exit 1
 
 say ""
-say "  History:   agent-history claude sessions all 10   ·   /history in Claude Code or Opencode"
+say "  History:   ide-history --id <SESSION ID>   ·   ide-history sessions   ·   /history in Claude Code or Opencode"
 say "  List:      claude-sessions"
 say "  Summarize: claude-sessions --sum <SESSION ID>"
 say "  Free look: claude-sessions --sum <SESSION ID> --sum-raw"

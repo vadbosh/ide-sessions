@@ -3,8 +3,8 @@
 **Three commands that list, summarize and prune the sessions of Claude Code,
 Codex CLI and opencode — including the one you lost track of.** A fourth,
 `billing`, shows what they cost: per day, week or month across all three, or
-for one session by its id. A fifth, `agent-history`, shows the prompts you typed,
-in any of them, after the session is gone.
+for one session by its id. A fifth, `ide-history`, shows what was said in a
+session — your prompts, or the whole conversation — after the session is gone.
 
 [Русская версия](README.RU.md) · [Changelog](CHANGELOG.md)
 
@@ -274,35 +274,59 @@ Cost of one session · Claude Code
   session was started with: a `/model` switch mid-session shows up as a second
   row.
 
-## Prompt history: `agent-history` and `/history`
+## Session history: `ide-history` and `/history`
 
 The arrow-key history of each IDE dies with the session. All three keep a
 persistent log anyway — `~/.claude/history.jsonl`, `~/.codex/history.jsonl`,
-opencode's database — and `agent-history` reads it.
+opencode's database — and a transcript of every session. `ide-history` reads
+both, in the same form as `billing`: one session by the id the `*-sessions`
+tools show, the IDE found from the id, a unique prefix enough.
 
 ```
-$ agent-history claude sessions all 3
-2026-09-29 09:57..2026-09-29 12:23  n=46   99b598c7-083f-4c5b-ad48-d4e243c434c3  [/srv/infra]
-2026-09-30 11:28..2026-09-30 11:33  n=4    7071011b-96fd-427f-b140-20f9c132c613  [/srv/infra]
-2026-10-01 12:51..2026-10-01 16:28  n=18   6bdedc19-62f0-4996-a91f-cbc4e93cf31c  [/srv/app]
+$ ide-history --id 6bdedc19
+Prompts of one session · Claude Code · 6bdedc19-62f0-4996-a91f-cbc4e93cf31c
+/srv/app · from the prompt history
+all 3 prompts, 2026-10-01 12:51 … 2026-10-01 16:28
+Uncapped: ~/.local/state/ide-history/ide-history-id-20261001-163001-Ab12Cd.txt
+
+2026-10-01 12:51  why does the healthcheck flap
+2026-10-01 13:40  /kb save
+2026-10-01 16:28  roll it out
 ```
 
 ```bash
-agent-history claude                    # this session's prompts (the default)
-agent-history claude /srv/app 100       # every session whose directory contains /srv/app
-agent-history codex sessions all        # sessions: first/last time, id, prompt count, directory
-agent-history opencode session=ses_fa66 # one session, by any fragment of its id
-agent-history claude all --file         # write to a file, print only its path
+ide-history --id 6bdedc19             # one session's prompts
+ide-history --id 01a0b455 --full      # the conversation: prompts and replies (see below)
+ide-history --grep terraform          # every prompt containing "terraform", with its session id
+ide-history sessions --ide codex      # sessions: first/last prompt, prompt count, id, directory
+ide-history -p                        # every prompt typed in this directory or below
+ide-history                           # this session — the one the command runs inside
 ```
 
-Every run also writes the unlimited result to a file in
-`~/.local/state/agent-history/` (mode 600: prompts can quote secrets) and prints
-its path on the first line, so nothing clipped off the screen is lost. Files
-older than 7 days are removed on the next run.
+Filters: `--ide claude|codex|opencode`, `--since`/`--until YYYY-MM-DD`,
+`-n N` rows on screen (default 40, `0` for all), `--json` for the records. A
+prefix that sessions of two IDEs share lists both and exits 1; `--ide` picks.
 
-"This session" is exact in Claude Code (`CLAUDE_CODE_SESSION_ID`). Codex and
-opencode pass no session id to a tool, so there it is the session that wrote
-the last prompt — the one asking.
+**`--full`** shows the conversation: your prompts and the assistant's text
+replies. Tool calls and their output would bury it, so they are left off the
+screen — and written, together with everything else, to the file the heading
+names: reasoning, every tool call with its arguments, every tool output, and
+what the IDE injected (skill bodies, `AGENTS.md`, Codex's developer messages).
+
+Every listing writes its uncapped result to `~/.local/state/ide-history/`
+(`$XDG_STATE_HOME` moves it; mode 600, because prompts can quote secrets) and
+names the file in its heading, so nothing cut off the screen is lost. Files
+older than 7 days are removed on the next run. Credentials are masked on the
+screen and in `--json`, by the same rules as `--sum`; the file keeps the text
+as typed.
+
+"This session" is exact in Claude Code (`CLAUDE_CODE_SESSION_ID`) and Codex
+(`CODEX_THREAD_ID`). opencode passes no session id to a tool, so there it is
+the most recently active session — the one asking.
+
+Not named `history`: that is a bash builtin, and a shell runs the builtin
+before any file on PATH. `ide-history` replaced `agent-history` in 0.11.0; see
+the [changelog](CHANGELOG.md) for the old forms and their new spelling.
 
 Inside an assistant, `/history` (Claude Code, opencode) or the `history` skill
 (all three, triggered by "history", «история команд») runs the same command

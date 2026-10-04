@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for the three session tools and billing.
+# Tests for the three session tools, billing and ide-history.
 #
 #   tests/test_sessions.sh
 #
@@ -480,7 +480,7 @@ for suffix in "" ".orig"; do
         > "$IDE_SESSIONS_SUM_CACHE/claude-$RSID$suffix.md"
 done
 "$ROOT/bin/claude-sessions" --rm "$RSID" --yes >/dev/null 2>&1
-left=$(ls "$IDE_SESSIONS_SUM_CACHE" | grep -c "$RSID" || true)
+left=$(find "$IDE_SESSIONS_SUM_CACHE" -maxdepth 1 -name "*$RSID*" | wc -l | tr -d ' ')
 if [ "$left" = 0 ]; then ok "claude: --rm removes the cached summaries"
 else nope "claude: --rm removes the cached summaries" "$left file(s) left"; fi
 
@@ -489,7 +489,7 @@ for suffix in "" ".orig"; do
         > "$IDE_SESSIONS_SUM_CACHE/codex-$CSID$suffix.md"
 done
 "$ROOT/bin/codex-sessions" --rm "$CSID" --yes >/dev/null 2>&1
-left=$(ls "$IDE_SESSIONS_SUM_CACHE" | grep -c "$CSID" || true)
+left=$(find "$IDE_SESSIONS_SUM_CACHE" -maxdepth 1 -name "*$CSID*" | wc -l | tr -d ' ')
 if [ "$left" = 0 ]; then ok "codex: --rm removes the cached summaries"
 else nope "codex: --rm removes the cached summaries" "$left file(s) left"; fi
 
@@ -888,40 +888,204 @@ bad="$(grep -nE "^[[:space:]]*trap '[^']*' .*(INT|TERM)" "$ROOT"/bin/*-sessions 
 if [ -z "$bad" ]; then ok "no INT/TERM trap returns instead of exiting"
 else nope "no INT/TERM trap returns instead of exiting" "$bad"; fi
 
-# ── agent-history ───────────────────────────────────────────────────────────
-echo "agent-history"
+# ── ide-history ─────────────────────────────────────────────────────────────
+# One HOME with all three IDEs. The Claude and Codex sessions share the prefix
+# "aaaa" on purpose: an id prefix that two IDEs share must be refused, not
+# guessed.
+echo "ide-history"
 
-AH_HOME="$TMP/ah-home"
-mkdir -p "$AH_HOME/.claude"
-python3 - "$AH_HOME/.claude/history.jsonl" <<'PY'
-import json, sys
-with open(sys.argv[1], "w") as f:
-    for i, (sid, proj, text) in enumerate([
-        ("aaaa1111-0000-0000-0000-000000000001", "/work/repo", "почини парсер"),
-        ("aaaa1111-0000-0000-0000-000000000001", "/work/repo", "add a test"),
-        ("bbbb2222-0000-0000-0000-000000000002", "/other/place", "unrelated ask"),
-    ]):
-        f.write(json.dumps({"sessionId": sid, "project": proj, "display": text,
-                            "timestamp": 1790000000000 + i * 60000}) + "\n")
+IH="$TMP/ih"
+mkdir -p "$IH/claude/projects/-work-repo" "$IH/codex/sessions/2026/03/02" "$IH/oc" "$IH/state"
+IH_CL="aaaa1111-0000-0000-0000-000000000001"
+IH_CL2="bbbb2222-0000-0000-0000-000000000002"
+IH_CX="aaaa9999-0000-7000-8000-000000000003"
+IH_OC="ses_ih00000000000000000000001"
+python3 - "$IH" "$IH_CL" "$IH_CL2" "$IH_CX" "$IH_OC" <<'PY'
+import json, sqlite3, sys
+root, cl, cl2, cx, ocid = sys.argv[1:6]
+base = 1772445600  # 2026-03-02 10:00 UTC
+def w(path, rows):
+    with open(path, "w") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+w(root + "/claude/history.jsonl", [
+    {"sessionId": cl, "project": "/work/repo", "display": "почини парсер",
+     "timestamp": base * 1000},
+    {"sessionId": cl, "project": "/work/repo", "display": "add a test\nwith two lines",
+     "timestamp": (base + 60) * 1000},
+    {"sessionId": cl2, "project": "/other/place", "display": "unrelated ask",
+     "timestamp": (base + 86400 * 5) * 1000},
+])
+iso = lambda s: "2026-03-02T10:%02d:00.000Z" % s
+w(root + "/claude/projects/-work-repo/%s.jsonl" % cl, [
+    {"type": "user", "timestamp": iso(0), "cwd": "/work/repo",
+     "message": {"content": "почини парсер"}},
+    {"type": "assistant", "timestamp": iso(1), "cwd": "/work/repo",
+     "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": "make test"}},
+                             {"type": "text", "text": "parser fixed"}]}},
+    {"type": "user", "timestamp": iso(2), "cwd": "/work/repo",
+     "message": {"content": [{"type": "tool_result", "content": "TOOL-OUTPUT-MARKER"}]}},
+    {"type": "user", "timestamp": iso(3), "cwd": "/work/repo",
+     "message": {"content": "<command-name>/kb</command-name><command-args>restore</command-args>"}},
+])
+w(root + "/codex/history.jsonl", [
+    {"session_id": cx, "ts": base + 120, "text": "prüfe den Cache"},
+])
+w(root + "/codex/sessions/2026/03/02/rollout-2026-03-02T10-02-00-%s.jsonl" % cx, [
+    {"timestamp": iso(2), "type": "session_meta", "payload": {"id": cx, "cwd": "/srv/app"}},
+    {"timestamp": iso(2), "type": "response_item",
+     "payload": {"type": "message", "role": "developer",
+                 "content": [{"type": "input_text", "text": "DEVELOPER-MARKER"}]}},
+    {"timestamp": iso(2), "type": "response_item",
+     "payload": {"type": "message", "role": "user",
+                 "content": [{"type": "input_text", "text": "prüfe den Cache"}]}},
+    {"timestamp": iso(3), "type": "response_item",
+     "payload": {"type": "function_call", "name": "exec_command", "arguments": "{\"cmd\": \"ls\"}"}},
+    {"timestamp": iso(3), "type": "response_item",
+     "payload": {"type": "function_call_output", "output": "CODEX-OUTPUT-MARKER"}},
+    {"timestamp": iso(4), "type": "response_item",
+     "payload": {"type": "message", "role": "assistant",
+                 "content": [{"type": "output_text", "text": "cache cleared"}]}},
+])
+con = sqlite3.connect(root + "/oc/opencode.db")
+con.executescript("""
+CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, time_updated INTEGER);
+CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);
+CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT);
+""")
+ms = (base + 300) * 1000
+con.execute("INSERT INTO session VALUES (?,?,?,?)", (ocid, None, "/opt/site", ms + 5000))
+con.execute("INSERT INTO message VALUES ('m1',?,?,?)", (ocid, ms, json.dumps({"role": "user"})))
+con.execute("INSERT INTO message VALUES ('m2',?,?,?)", (ocid, ms + 1000, json.dumps({"role": "assistant"})))
+for pid, mid, t, d in [
+    ("p1", "m1", ms, {"type": "text", "text": "разбери падение тестов"}),
+    ("p2", "m1", ms, {"type": "text", "text": "SYNTHETIC-MARKER", "synthetic": True}),
+    ("p3", "m2", ms + 1000, {"type": "tool", "tool": "bash",
+                             "state": {"input": {"command": "pytest"}, "output": "OC-OUTPUT-MARKER"}}),
+    ("p4", "m2", ms + 2000, {"type": "text", "text": "flaky fixture removed"}),
+]:
+    con.execute("INSERT INTO part VALUES (?,?,?,?,?)", (pid, mid, ocid, t, json.dumps(d)))
+con.commit()
 PY
-ah() { env -u CLAUDE_CODE_SESSION_ID -u XDG_STATE_HOME HOME="$AH_HOME" "$ROOT/bin/agent-history" "$@" 2>&1 | sed 's/\x1b\[[0-9;]*m//g'; }
-out="$(ah claude sessions all 5)"
-contains "agent-history: sessions lists the session"         "$out" "aaaa1111-0000-0000-0000-000000000001"
-contains "agent-history: sessions counts entries per session" "$out" "n=2"
-out="$(ah claude /work/repo 10)"
-contains "agent-history: a project filter keeps its entries" "$out" "почини парсер"
-absent   "agent-history: a project filter drops the others"  "$out" "unrelated ask"
-contains "agent-history: every run names the full-history file" "$out" "[FULL history: 2 entries"
-if ls "$AH_HOME/.local/state/agent-history/"agent-history-claude-*-full.txt >/dev/null 2>&1 \
-   && [ "$(stat -c %a "$AH_HOME/.local/state/agent-history")" = 700 ]; then
-    ok "agent-history: the full-history file is in the state dir, mode 700"
+ih() {
+    env -u CLAUDE_CODE_SESSION_ID -u CODEX_THREAD_ID -u OPENCODE TZ=UTC \
+        CLAUDE_CONFIG_DIR="$IH/claude" CODEX_HOME="$IH/codex" OPENCODE_DATA_DIR="$IH/oc" \
+        XDG_STATE_HOME="$IH/state" ${IH_ENV:-} "$ROOT/bin/ide-history" "$@" 2>&1
+}
+# the file the last run named in its heading
+ih_file() { printf '%s\n' "$1" | sed -n 's/^\(Uncapped\|Everything[^:]*\): //p' | head -1; }
+
+# A key pasted into a prompt. Built at run time so no key-shaped literal sits
+# in this file.
+IH_KEY="gh""p_$(printf 'k%.0s' $(seq 36))"
+python3 - "$IH/claude/history.jsonl" "$IH_CL2" "$IH_KEY" <<'PY2'
+import json, sys
+with open(sys.argv[1], "a") as f:
+    f.write(json.dumps({"sessionId": sys.argv[2], "project": "/other/place",
+                        "display": "push with token " + sys.argv[3],
+                        "timestamp": 1772445600000 + 86400 * 5 * 1000 + 60000}) + "\n")
+PY2
+
+out="$(ih --id aaaa1111)"
+contains "ide-history --id: a prefix finds the session"     "$out" "Prompts of one session · Claude Code · $IH_CL"
+contains "ide-history --id: the prompts are listed"         "$out" "почини парсер"
+contains "ide-history --id: a second line stays, indented"  "$out" "$(printf '\n')                  with two lines"
+absent   "ide-history --id: another session stays out"      "$out" "unrelated ask"
+out="$(ih --id aaaa9999)"
+contains "ide-history --id: a Codex session, its directory from the rollout" "$out" "/srv/app"
+out="$(ih --id ses_ih)"
+contains "ide-history --id: an opencode session"            "$out" "разбери падение тестов"
+absent   "ide-history --id: opencode's injected text is not a prompt" "$out" "SYNTHETIC-MARKER"
+
+out="$(ih --id aaaa)"; rc=$?
+contains "ide-history --id: a prefix two IDEs share lists both" "$out" "$IH_CX"
+if [ "$rc" = 1 ]; then ok "ide-history --id: an ambiguous prefix exits 1"; else nope "ide-history --id: an ambiguous prefix exits 1" "exit $rc"; fi
+out="$(ih --id aaaa --ide codex)"
+contains "ide-history --id: --ide narrows a shared prefix"  "$out" "prüfe den Cache"
+out="$(ih --id ffff)"; rc=$?
+contains "ide-history --id: no match says so"               "$out" 'no session matches "ffff"'
+[ "$rc" = 1 ] && ok "ide-history --id: no match exits 1" || nope "ide-history --id: no match exits 1" "exit $rc"
+
+out="$(ih --id aaaa1111 --full)"
+contains "ide-history --full: the reply is on the screen"   "$out" "parser fixed"
+contains "ide-history --full: a slash command reads as typed" "$out" "/kb restore"
+absent   "ide-history --full: tool output is not on the screen" "$out" "TOOL-OUTPUT-MARKER"
+f="$(ih_file "$out")"
+everything="$(cat "$f" 2>/dev/null)"
+contains "ide-history --full: the file has the tool output" "$everything" "TOOL-OUTPUT-MARKER"
+contains "ide-history --full: the file has the tool call"   "$everything" "tool call Bash"
+contains "ide-history --full: the file has the call's arguments" "$everything" "make test"
+if [ "$(stat -c %a "$f" 2>/dev/null)" = 600 ] && [ "$(stat -c %a "$IH/state/ide-history")" = 700 ]; then
+    ok "ide-history: the file is 600 in a 700 state dir"
 else
-    nope "agent-history: the full-history file is in the state dir, mode 700" "$(ls -la "$AH_HOME/.local/state" 2>&1)"
+    nope "ide-history: the file is 600 in a 700 state dir" "$(ls -la "$IH/state/ide-history" 2>&1 | head -3)"
 fi
-out="$(ah claude session=bbbb2222)"
-contains "agent-history: session=<fragment> finds one session" "$out" "unrelated ask"
-if "$ROOT/bin/agent-history" --help >/dev/null 2>&1; then ok "agent-history: --help exits 0"
-else nope "agent-history: --help exits 0"; fi
+out="$(ih --id aaaa9999 --full)"
+absent   "ide-history --full: Codex's developer text is not on the screen" "$out" "DEVELOPER-MARKER"
+contains "ide-history --full: the Codex reply is"           "$out" "cache cleared"
+everything="$(cat "$(ih_file "$out")" 2>/dev/null)"
+contains "ide-history --full: Codex tool output in the file" "$everything" "CODEX-OUTPUT-MARKER"
+contains "ide-history --full: Codex developer text in the file" "$everything" "DEVELOPER-MARKER"
+out="$(ih --id ses_ih --full)"
+absent   "ide-history --full: opencode tool output not on screen" "$out" "OC-OUTPUT-MARKER"
+everything="$(cat "$(ih_file "$out")" 2>/dev/null)"
+contains "ide-history --full: opencode tool output in the file" "$everything" "OC-OUTPUT-MARKER"
+
+out="$(ih --grep CACHE)"
+contains "ide-history --grep: any case, across IDEs"        "$out" "prüfe den Cache"
+contains "ide-history --grep: names the session"            "$out" "${IH_CX:0:12}"
+absent   "ide-history --grep: non-matching prompts stay out" "$out" "почини парсер"
+out="$(ih --grep 'push with token')"
+contains "ide-history: a key in a prompt is masked on the screen" "$out" "<REDACTED:40>"
+absent   "ide-history: the key itself is not on the screen"     "$out" "$IH_KEY"
+contains "ide-history: the file keeps the prompt as typed"      "$(cat "$(ih_file "$out")" 2>/dev/null)" "$IH_KEY"
+absent   "ide-history --json: the key is masked there too"      "$(ih --grep 'push with token' --json)" "$IH_KEY"
+same_redaction="$(python3 - "$ROOT/bin" <<'PY2'
+import sys
+def block(p):
+    s = open(p).read()
+    a = s.index('# ── redaction')
+    end = "    return '\\n'.join(out)\n"
+    return s[a:s.index(end, a) + len(end)]
+blocks = {n: block('%s/%s' % (sys.argv[1], n)) for n in
+          ('claude-sessions', 'codex-sessions', 'opencode-sessions', 'ide-history')}
+print(' '.join(n for n, b in blocks.items() if b != blocks['claude-sessions']))
+PY2
+)"
+if [ -z "$same_redaction" ]; then ok "redaction: the four copies of the block are identical"
+else nope "redaction: the four copies of the block are identical" "differs: $same_redaction"; fi
+out="$(ih sessions)"
+contains "ide-history sessions: Claude Code"                "$out" "$IH_CL"
+contains "ide-history sessions: Codex"                      "$out" "$IH_CX"
+contains "ide-history sessions: opencode"                   "$out" "$IH_OC"
+contains "ide-history sessions: prompt count"               "$out" "n=2"
+out="$(ih /work)"
+contains "ide-history SUBSTRING: prompts in that directory" "$out" "почини парсер"
+absent   "ide-history SUBSTRING: other directories stay out" "$out" "unrelated ask"
+out="$(ih /work --since 2026-03-03)"
+contains "ide-history --since: an empty result says so"     "$out" "none."
+out="$(ih sessions -n 1)"
+contains "ide-history -n: says what it cut"                 "$out" "last 1 of 4 sessions"
+out="$(ih --id aaaa1111 --json)"
+if printf '%s' "$out" | python3 -c 'import json,sys; assert len(json.load(sys.stdin)) == 2' 2>/dev/null; then
+    ok "ide-history --json: one record per prompt"
+else
+    nope "ide-history --json: one record per prompt" "$(printf '%s' "$out" | head -3)"
+fi
+
+out="$(IH_ENV="CLAUDE_CODE_SESSION_ID=$IH_CL2" ih)"
+contains "ide-history: no arguments = the Claude session it runs in" "$out" "unrelated ask"
+out="$(IH_ENV="CODEX_THREAD_ID=$IH_CX" ih)"
+contains "ide-history: no arguments = the Codex session it runs in" "$out" "prüfe den Cache"
+out="$(ih)"; rc=$?
+contains "ide-history: outside an assistant says what to give" "$out" "ide-history --id ID"
+[ "$rc" = 2 ] && ok "ide-history: outside an assistant exits 2" || nope "ide-history: outside an assistant exits 2" "exit $rc"
+out="$(ih claude sessions)"
+contains "ide-history: the old agent-history form explains the new one" "$out" "--ide claude"
+out="$(ih --id x --grep y)"
+contains "ide-history: two questions at once are refused"   "$out" "give one"
+if "$ROOT/bin/ide-history" --help >/dev/null 2>&1; then ok "ide-history: --help exits 0"
+else nope "ide-history: --help exits 0"; fi
 
 # ── install.sh ──────────────────────────────────────────────────────────────
 # Into a throwaway HOME with all three assistants present. The variables the
@@ -946,7 +1110,7 @@ while read -r installed source; do
     if cmp -s "$IN_HOME/$installed" "$ROOT/$source"; then ok "install: $installed = $source"
     else nope "install: $installed = $source" "missing or different"; fi
 done <<'PAIRS'
-.local/bin/agent-history bin/agent-history
+.local/bin/ide-history bin/ide-history
 .local/bin/claude-sessions bin/claude-sessions
 .claude/skills/history/SKILL.md skills/history/SKILL.md
 .claude/commands/history.md commands/history.md
@@ -976,6 +1140,20 @@ inst --uninstall
 left="$(cd "$IN_HOME" && find . -type f -not -path './.local/state/*')"
 if [ -z "$left" ] && [ ! -d "$IN_HOME/.claude/skills/history" ]; then ok "install: --uninstall removes everything it installed"
 else nope "install: --uninstall removes everything it installed" "$left"; fi
+# agent-history, replaced by ide-history: the copy an install wrote goes, a
+# copy edited by hand stays.
+rm -rf "$IN_HOME"; mkdir -p "$IN_HOME/.claude" "$IN_HOME/.local/bin"
+git -C "$ROOT" show 6720ff2:bin/agent-history > "$IN_HOME/.local/bin/agent-history"
+inst
+if [ ! -e "$IN_HOME/.local/bin/agent-history" ]; then ok "install: the agent-history an install wrote is removed"
+else nope "install: the agent-history an install wrote is removed"; fi
+printf '#!/bin/sh\n# mine\n' > "$IN_HOME/.local/bin/agent-history"
+inst
+if [ -f "$IN_HOME/.local/bin/agent-history" ] && grep -q 'edited by hand' "$TMP/inst.out"; then
+    ok "install: a hand-edited agent-history stays, with a warning"
+else
+    nope "install: a hand-edited agent-history stays, with a warning" "$(cat "$TMP/inst.out" | tail -3)"
+fi
 rm -rf "$IN_HOME"; mkdir -p "$IN_HOME/.claude"
 inst
 if [ ! -e "$IN_HOME/.codex" ] && [ ! -e "$IN_HOME/.config/opencode" ]; then ok "install: an assistant that is not there is not created"

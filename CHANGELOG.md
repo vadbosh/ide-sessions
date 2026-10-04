@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.11.0
+
+**`ide-history` replaces `agent-history`, in the form of `billing`.** One
+session by the id the `*-sessions` tools show — `ide-history --id ID` — with
+the IDE found from the id and a unique prefix enough; a prefix that sessions of
+two IDEs share lists both and exits 1, `--ide` picks. Every listing opens with
+a line saying what it is and how many rows of how many are shown. Not named
+`history`: that is a bash builtin, and a shell runs it before any file on PATH.
+
+New:
+
+- `--id ID --full` — the conversation: prompts and the assistant's text
+  replies. Tool calls and their output stay off the screen; the file the
+  heading names holds everything — reasoning, each tool call with its
+  arguments, each tool output, what the IDE injected.
+- `--grep TEXT` — every prompt containing TEXT, in any IDE, with its session id.
+- `sessions`, the plain listing and `--grep` take the filters of `billing`:
+  `--ide`, `--since`, `--until`, `-n` (0 = all), `--json`; `-p` for this
+  directory and below.
+- "This session" in Codex is now exact: Codex passes `CODEX_THREAD_ID` to its
+  tools. It was the session that wrote the last prompt.
+- A session older than the prompt log still shows its prompts — from the
+  transcript.
+- Credentials are masked on the screen and in `--json`, with the same rules as
+  `--sum` (the block is shared verbatim; a test fails when the four copies
+  differ). `/history` puts the output into the assistant's reply, so an
+  unmasked key would land in one more transcript each time. The file keeps the
+  text as typed.
+
+Fixed:
+
+- opencode history works without the `sqlite3` binary. `agent-history` ran it
+  for every opencode query, printed `sqlite3: command not found` where it was
+  missing, and exited 0. `ide-history` reads the database through python3,
+  which the installer already requires.
+
+Changed:
+
+- The old forms are refused with their new spelling: `agent-history codex
+  session=01a0` is `ide-history --ide codex --id 01a0`, `agent-history claude
+  sessions all` is `ide-history sessions --ide claude`, `agent-history claude
+  /srv/app` is `ide-history --ide claude /srv/app`. `--file` is gone — every
+  listing already names its file.
+- Result files: `~/.local/state/ide-history/`, was `.../agent-history/`.
+- `install.sh` removes `~/.local/bin/agent-history` when it is the copy an
+  install wrote; one edited by hand is left in place, with a warning.
+- The `history` skill and `/history` run `ide-history`.
+
 ## 0.10.1
 
 **Backups of one skill from three assistants no longer overwrite each other.**
