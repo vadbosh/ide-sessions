@@ -66,7 +66,9 @@ directory a session is really bound to, and how recent it is.
 **What was in it.** Remembering means reading the whole transcript again.
 `--sum` gives back 2-4 bullets per topic, five topics at most — and always in
 English, whatever language the session was held in, so a summary can be skimmed
-by someone who did not run the session.
+by someone who did not run the session. When the words themselves matter,
+`ide-history --id ID --full` prints the conversation as it was — no model, no
+cost — and writes everything else, tool calls included, to a file.
 
 ## Install
 
