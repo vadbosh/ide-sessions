@@ -601,7 +601,7 @@ run already removed.
 Codex and opencode keep everything: no time limit, no size limit, nothing to
 configure. Codex's `[history]` settings in `config.toml` govern
 `~/.codex/history.jsonl`, the prompt history — not the rollouts. Their oldest
-session is simply the day the IDE was first used, and the only thing that
+session dates from the day the IDE was first used, and the only thing that
 removes one is `--rm`.
 
 **Codex** — one `rollout-*.jsonl` per session. Two layouts are in circulation:

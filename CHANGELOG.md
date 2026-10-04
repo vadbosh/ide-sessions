@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.2
+
+- **README.md:** "Their oldest session is simply the day the IDE was first used"
+  — a session is not a day — is "dates from the day". The Russian version had
+  inherited the same sentence and was fixed in 0.12.1.
+
 ## 0.12.1
 
 - **README.RU.md reads as Russian in nine places**, found by a docs-techwriter
