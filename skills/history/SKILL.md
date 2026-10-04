@@ -33,7 +33,7 @@ YYYY-MM-DD`, `-n N` (rows on screen, default 40, `0` = all), `--json`.
 - "This session" is exact in Claude Code (`CLAUDE_CODE_SESSION_ID`) and Codex
   (`CODEX_THREAD_ID`); in opencode it is the most recently active session.
 - Every listing writes its uncapped result to `~/.local/state/ide-history/`
-  and names the file in its heading, so nothing cut off the screen is lost.
+  and names the file on its last line, so nothing cut off the screen is lost.
 - The user does not know the id → run `ide-history sessions` (or
   `--grep` with a word from that session) first.
 

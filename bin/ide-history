@@ -14,10 +14,10 @@
 # Not named `history`: that is a bash builtin, and in a shell the builtin wins
 # over any file on PATH — `history --id` would never reach this script.
 #
-# Every listing opens with a line that says what it is: which session or which
+# Every listing ends with lines that say what it is: which session or which
 # filter, which IDEs, and how many rows of how many are shown. The rows
-# themselves are capped (-n), so the uncapped result goes to a file and the
-# heading names it: nothing cut off the screen is lost.
+# themselves are capped (-n), so the uncapped result goes to a file and the last
+# line names it: nothing cut off the screen is lost.
 set -euo pipefail
 
 usage() {
@@ -31,7 +31,7 @@ ONE SESSION
                                     The IDE is found from the id.
   ide-history --id ID --full        the conversation: your prompts and the assistant's
                                     replies. Tool calls and their output are left off
-                                    the screen; the file named in the heading holds
+                                    the screen; the file named on the last line holds
                                     EVERYTHING — reasoning, every tool call with its
                                     arguments, every tool output, what the IDE injected.
   ide-history                       this session: the one the command runs inside.
@@ -71,6 +71,8 @@ EXAMPLES  (the same form for every IDE)
 
 OUTPUT
   Times are local. A prompt of several lines keeps them, indented.
+  The heading comes last, under the rows, where the screen ends; its last line
+  names the uncapped file, yellow on a terminal (NO_COLOR turns that off).
   Credentials are masked on the screen and in --json (<REDACTED:N>, as --sum
   does), because an assistant's /history puts this output into its reply. The
   file keeps the text as typed.
@@ -674,6 +676,21 @@ def write_file(lines):
         fh.write('\n'.join(lines) + '\n')
 
 
+# The heading goes under the rows, not above them: forty messages push a
+# heading off the top of the screen, and the file it names is the one line the
+# reader has to find. That line is yellow on a terminal; piped — into a file,
+# or into an assistant's reply through /history — it is plain text.
+YELLOW = sys.stdout.isatty() and not os.environ.get('NO_COLOR')
+
+
+def footer(lines, file_line, gap=True):
+    if gap:
+        print()
+    for line in lines:
+        print(line)
+    print('\033[1;93m%s\033[0m' % file_line if YELLOW else file_line)
+
+
 def counted(shown, total, noun, first, last):
     if shown < total:
         return 'last %d of %d %s, %s … %s  (-n 0 for all)' % (shown, total, noun, first, last)
@@ -788,17 +805,17 @@ def one_session(ide, sid, how):
             die('%s session %s: no transcript with a conversation was found' % (NAME[ide], sid))
         write_file(everything)
         shown = cap(screen)
-        print('Conversation of one session · %s · %s%s' % (NAME[ide], sid,
-              '' if how == 'by id' else ' (%s)' % how))
-        print('%s · your prompts and the assistant\'s replies; tool calls and their output are only in the file'
-              % (project_of(ide, sid, records) or '?'))
-        print(counted(len(shown), len(screen), 'messages', when(shown[0]['ep']), when(shown[-1]['ep'])))
-        print('Everything, tool calls and their output included (%d records): %s' % (len(records), OUTFILE))
-        print()
         for r in shown:
             print('── %s · %s' % ('you' if r['kind'] == 'prompt' else 'assistant', when(r['ep'])))
             print(redact(r['text'].rstrip()))
             print()
+        footer(['Conversation of one session · %s · %s%s' % (NAME[ide], sid,
+                '' if how == 'by id' else ' (%s)' % how),
+                '%s · your prompts and the assistant\'s replies; tool calls and their output are only in the file'
+                % (project_of(ide, sid, records) or '?'),
+                counted(len(shown), len(screen), 'messages', when(shown[0]['ep']), when(shown[-1]['ep']))],
+               'Everything, tool calls and their output included (%d records): %s' % (len(records), OUTFILE),
+               gap=False)
         return
 
     records = sorted((r for r in PROMPTS[ide]() if r['session'] == sid), key=lambda r: r['ep'])
@@ -820,13 +837,12 @@ def one_session(ide, sid, how):
     write_file(rows)
     shown = cap(rows)
     first, last = records[-len(shown)]['ep'], records[-1]['ep']
-    print('Prompts of one session · %s · %s%s' % (NAME[ide], sid,
-          '' if how == 'by id' else ' (%s)' % how))
-    print('%s · from the %s' % (project_of(ide, sid, records) or '?', source))
-    print(counted(len(shown), len(rows), 'prompts', when(first), when(last)))
-    print('Uncapped: %s' % OUTFILE)
-    print()
     print(redact('\n'.join(shown)))
+    footer(['Prompts of one session · %s · %s%s' % (NAME[ide], sid,
+            '' if how == 'by id' else ' (%s)' % how),
+            '%s · from the %s' % (project_of(ide, sid, records) or '?', source),
+            counted(len(shown), len(rows), 'prompts', when(first), when(last))],
+           'Uncapped: %s' % OUTFILE)
 
 
 def listing(title, records, noun):
@@ -842,11 +858,10 @@ def listing(title, records, noun):
     write_file([h + indent(r['text'], ' ' * 18) for h, r in zip(head, records)])
     rows = [h + flat(r['text']) for h, r in zip(head, records)]
     shown = cap(rows)
-    print('%s · %s' % (title, scope()))
-    print(counted(len(shown), len(rows), noun, when(records[-len(shown)]['ep']), when(records[-1]['ep'])))
-    print('Uncapped: %s' % OUTFILE)
-    print()
     print(redact('\n'.join(shown)))
+    footer(['%s · %s' % (title, scope()),
+            counted(len(shown), len(rows), noun, when(records[-len(shown)]['ep']), when(records[-1]['ep']))],
+           'Uncapped: %s' % OUTFILE)
 
 
 def sessions():
@@ -878,12 +893,11 @@ def sessions():
              a['ide'], a['n'], a['session'], a['project'] or '?') for a in rows]
     write_file(lines)
     shown = cap(lines)
-    print('Sessions with prompts · %s · newest last' % scope())
-    print(counted(len(shown), len(lines), 'sessions', when(rows[-len(shown)]['last']),
-                  when(rows[-1]['last'])))
-    print('Uncapped: %s' % OUTFILE)
-    print()
     print('\n'.join(shown))
+    footer(['Sessions with prompts · %s · newest last' % scope(),
+            counted(len(shown), len(lines), 'sessions', when(rows[-len(shown)]['last']),
+                    when(rows[-1]['last']))],
+           'Uncapped: %s' % OUTFILE)
 
 
 if MODE == 'self':

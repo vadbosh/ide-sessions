@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.11.2
+
+**`ide-history` puts its heading under the rows.** Forty messages of
+`--full` pushed the heading off the top of the screen, and with it the one
+line the reader needed: the file that holds everything. The rows come first
+now; the heading follows, and its last line names the file — yellow on a
+terminal, plain when piped or shown through `/history` (`NO_COLOR` turns the
+colour off). Every mode: `--id`, `--full`, `--grep`, `sessions`, the plain
+listing.
+
 ## 0.11.1
 
 **A short password is masked.** The label rule masked a value only from 16

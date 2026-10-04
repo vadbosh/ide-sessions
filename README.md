@@ -284,14 +284,14 @@ tools show, the IDE found from the id, a unique prefix enough.
 
 ```
 $ ide-history --id 6bdedc19
+2026-10-01 12:51  why does the healthcheck flap
+2026-10-01 13:40  /kb save
+2026-10-01 16:28  roll it out
+
 Prompts of one session · Claude Code · 6bdedc19-62f0-4996-a91f-cbc4e93cf31c
 /srv/app · from the prompt history
 all 3 prompts, 2026-10-01 12:51 … 2026-10-01 16:28
 Uncapped: ~/.local/state/ide-history/ide-history-id-20261001-163001-Ab12Cd.txt
-
-2026-10-01 12:51  why does the healthcheck flap
-2026-10-01 13:40  /kb save
-2026-10-01 16:28  roll it out
 ```
 
 ```bash
@@ -309,13 +309,15 @@ prefix that sessions of two IDEs share lists both and exits 1; `--ide` picks.
 
 **`--full`** shows the conversation: your prompts and the assistant's text
 replies. Tool calls and their output would bury it, so they are left off the
-screen — and written, together with everything else, to the file the heading
-names: reasoning, every tool call with its arguments, every tool output, and
+screen — and written, together with everything else, to the file named on the
+last line: reasoning, every tool call with its arguments, every tool output, and
 what the IDE injected (skill bodies, `AGENTS.md`, Codex's developer messages).
 
 Every listing writes its uncapped result to `~/.local/state/ide-history/`
 (`$XDG_STATE_HOME` moves it; mode 600, because prompts can quote secrets) and
-names the file in its heading, so nothing cut off the screen is lost. Files
+names the file on its last line — yellow on a terminal — so nothing cut off
+the screen is lost. The heading lines sit under the rows, where the screen
+ends. Files
 older than 7 days are removed on the next run. Credentials are masked on the
 screen and in `--json`, by the same rules as `--sum`; the file keeps the text
 as typed.

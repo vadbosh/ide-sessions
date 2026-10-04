@@ -1064,6 +1064,14 @@ absent   "ide-history --full: opencode tool output not on screen" "$out" "OC-OUT
 everything="$(cat "$(ih_file "$out")" 2>/dev/null)"
 contains "ide-history --full: opencode tool output in the file" "$everything" "OC-OUTPUT-MARKER"
 
+out="$(ih --id aaaa1111 --full)"
+last="$(printf '%s\n' "$out" | tail -1)"
+contains "ide-history: the file is named on the last line"   "$last" "Everything, tool calls and their output included"
+first="$(printf '%s\n' "$out" | head -1)"
+contains "ide-history: the rows come first, the heading under them" "$first" "── you"
+out="$(ih --id aaaa1111)"
+contains "ide-history --id: the last line names the file"     "$(printf '%s\n' "$out" | tail -1)" "Uncapped: "
+absent   "ide-history: no colour codes when piped"            "$out" $'\033['
 out="$(ih --grep CACHE)"
 contains "ide-history --grep: any case, across IDEs"        "$out" "prüfe den Cache"
 contains "ide-history --grep: names the session"            "$out" "${IH_CX:0:12}"
