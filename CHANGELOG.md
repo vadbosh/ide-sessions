@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.12.1
+
+- **README.RU.md reads as Russian in nine places**, found by a docs-techwriter
+  review. «суммируют», «суммируется», «просуммирует» (*summarize*; «суммировать»
+  is to add numbers up) are «делают сводку», «сводка строится заново»,
+  «перескажет». Also: «побеждает первое сработавшее» (*first match wins*),
+  «попадание в кэш не делает никакой работы», an elliptic «Мягче — когда…»,
+  two dangling «это», «сессия — это день», and «названный id — уже достаточное
+  намерение». The English README is unchanged.
+
 ## 0.12.0
 
 **`--sum` sees the middle of a long session.** The digest kept the first and
