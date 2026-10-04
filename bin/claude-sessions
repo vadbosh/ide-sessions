@@ -275,8 +275,21 @@ VALUE = r'[A-Za-z0-9+/=_.~-]{16,}'
 # Assignment first — NAME=value, NAME: value, Authorization: Bearer value —
 # then the flag form, --pass value. Both keep the label readable: a summary that
 # hides which credential was involved answers nothing.
-NAMED = re.compile(r'(%s)(\s*[=:]\s*(?:Bearer\s+)?)([\'"]?)(%s)' % (LABEL, VALUE), re.I)
+# A quoted key closes its quote before the separator — "password":"…" in JSON,
+# \"password\":\"…\" in JSON pasted into JSON — so the closing quote and its
+# escape are allowed there; without them a logged request body passed untouched.
+NAMED = re.compile(r'(%s)(\\?[\'"]?\s*[=:]\s*(?:Bearer\s+)?)(\\?[\'"]?)(%s)' % (LABEL, VALUE), re.I)
 FLAGGED = re.compile(r'(%s)(\s+)([\'"]?)(%s)' % (LABEL, VALUE), re.I)
+
+# A password is short far more often than a key, and the 16-character floor let
+# one through in plain sight: "password":"<10 characters>" in a request body
+# pasted from an application log. So under a password-family label, and only in
+# the assignment form, a value of 6 or more characters is masked when it holds a
+# digit or a symbol: "password: required" stays readable, and "--pass through"
+# is not an assignment at all.
+PW_LABEL = r'\b(?:[A-Za-z0-9]+[-_])*(?:passwd|password|passphrase|pwd|pass)\b'
+PW_VALUE = r'(?=[^\s\'"\\,;&]*[0-9!@#$%^*+=?])[^\s\'"\\,;&]{6,}'
+NAMED_PW = re.compile(r'(%s)(\\?[\'"]?\s*[=:]\s*)(\\?[\'"]?)(%s)' % (PW_LABEL, PW_VALUE), re.I)
 
 # A line that talks about credentials at all. Only there is a long anonymous
 # run treated as a secret.
@@ -296,7 +309,7 @@ def redact(text):
             lambda m: '://<REDACTED:%d>@' % len(m.group(1)), line)
         # A value already masked is left alone: masking the marker again would
         # overwrite the real length with the marker's own.
-        for pat in (NAMED, FLAGGED):
+        for pat in (NAMED, FLAGGED, NAMED_PW):
             line = pat.sub(
                 lambda m: m.group(0) if m.group(4).startswith('<REDACTED:')
                 else '%s%s%s<REDACTED:%d>' % (m.group(1), m.group(2),

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.11.1
+
+**A short password is masked.** The label rule masked a value only from 16
+characters, and only when the separator followed the label directly — so
+`"password":"<10 characters>"` in a request body pasted from an application
+log reached the screen of `ide-history` and the digest of `--sum` untouched.
+Now a quoted key may close its quote (and escape it) before the separator, and
+under a password-family label (`password`, `passwd`, `passphrase`, `pwd`,
+`pass`, `DB_PASS` and the like) a value of 6 or more characters is masked in
+the assignment form when it holds a digit or a symbol. `password: required`
+and `pass through` stay as they are. Same block in all four scripts.
+
 ## 0.11.0
 
 **`ide-history` replaces `agent-history`, in the form of `billing`.** One

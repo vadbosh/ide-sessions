@@ -208,6 +208,39 @@ absent   "Jira legacy at- token"         "$out" "at-abcdefghijklmnopqrstuvwxyz01
 contains "the label stays readable"      "$out" "HW_ACCESS_KEY=<REDACTED:20>"
 contains "a 40-hex SHA with no label stays" "$out" "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"
 
+# Short passwords. A request body pasted from an application log carried a
+# 10-character password, and the 16-character floor of the label rule let it
+# through: shorter values under a password-family label are masked in the
+# assignment form when they hold a digit or a symbol. Values are built at run
+# time, so no password-shaped literal sits in this file.
+PSID="99999999-8888-7777-6666-555555555533"
+PT="$CLAUDE_DIR/projects/-work-repo/$PSID.jsonl"
+python3 - "$PT" <<'PY'
+import json, sys
+def turn(text):
+    return {"type": "user", "timestamp": "2026-03-02T10:00:00.000Z",
+            "cwd": "/work/repo",
+            "message": {"content": [{"type": "text", "text": text}]}}
+v = "zq7" + "walk9"
+rows = [
+    turn('body {"email":"a@b.c","password":"%s"} came back' % v),
+    turn('escaped {\\"password\\":\\"%sx\\"} too' % v),
+    turn("export DB_PASS=k3t" + "tle!"),
+    turn("password: required for the admin page"),
+    turn("let it pass through 123abc unchanged"),
+]
+with open(sys.argv[1], 'w') as fh:
+    for r in rows:
+        fh.write(json.dumps(r) + "\n")
+PY
+out="$("$ROOT/bin/claude-sessions" --sum "$PSID" --sum-raw 2>&1)"
+absent   "a short password in a JSON body"    "$out" 'zq7walk9"'
+contains "its key stays readable"             "$out" '"password":"<REDACTED:8>"'
+absent   "a short password in escaped JSON"   "$out" "zq7walk9x"
+absent   "a short password by variable name"  "$out" "k3ttle!"
+contains "a password field with a word stays" "$out" "password: required"
+contains "'pass' as a verb stays"             "$out" "pass through 123abc"
+
 # ── codex ───────────────────────────────────────────────────────────────────
 echo "codex-sessions"
 
