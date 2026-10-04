@@ -64,9 +64,10 @@ query, and impossible to see from the CLI. All three listings show the id, the
 directory a session is really bound to, and how recent it is.
 
 **What was in it.** Remembering means reading the whole transcript again.
-`--sum` gives back 2-4 bullets per topic, five topics at most — and always in
-English, whatever language the session was held in, so a summary can be skimmed
-by someone who did not run the session. When the words themselves matter,
+`--sum` gives back 2-4 bullets per topic — at most five topics for a day, eight
+for a session over several days — and always in English, whatever language the
+session was held in, so a summary can be skimmed by someone who did not run the
+session. When the words themselves matter,
 `ide-history --id ID --full` prints the conversation as it was — no model, no
 cost — and writes everything else, tool calls included, to a file.
 
@@ -343,9 +344,11 @@ user commands.
 
 Two passes.
 
-**Locally**, the session is reduced to a digest: what was asked, short excerpts
-of the replies, and a count per tool — split into parts wherever the work
-actually stopped (a silence longer than `--sum-gap`, or a change of directory).
+**Locally**, the session is reduced to a digest: each turn as a pair — what was
+asked, and what the turn ended with — plus a count per tool, split into parts
+wherever the work actually stopped (a silence longer than `--sum-gap`, or a
+change of directory). A long session keeps 100 pairs, taken at an even step
+across every part, so work in the middle of a long stretch reaches the model.
 Everything a summary cannot use is dropped here: tool output, hook chatter,
 slash-command plumbing, injected skill and AGENTS.md preambles, subagent
 sidechains. `--sum-raw` prints exactly this and costs nothing.

@@ -376,13 +376,45 @@ def cut(s, n):
     s = ' '.join(s.split())
     return s if len(s) <= n else s[:n - 1] + '…'
 
-# Both ends of a segment carry meaning — the ask at the start, the outcome at
-# the end. The middle is where repetition lives, so that is what is dropped.
-def sample(items, keep):
+# The model sees each exchange as a pair: what was asked, and what the turn
+# ended with -- the last thing the assistant said before the next ask. That is
+# where the outcome is; the first reply of a turn is usually "let me check".
+#
+# Pairs are taken at an even step across each part, not from its two ends. A
+# part of 40 asks used to keep its first and last four, and whatever the work
+# was in the middle never reached the model: a week of alerting work on one
+# cluster came back as three bullets under other headings. The budget is a
+# number of pairs for the whole digest, shared by parts in proportion to their
+# length, so a short session goes in whole and a long one at an even step.
+DIGEST_PAIRS = 100
+
+def pairs(seg):
+    out, cur = [], None
+    for t in seg:
+        if not t['txt']:
+            continue
+        if t['role'] == 'user':
+            cur = {'ask': t['txt'], 'done': ''}
+            out.append(cur)
+        else:
+            if cur is None:
+                cur = {'ask': '', 'done': ''}
+                out.append(cur)
+            cur['done'] = t['txt']
+    return out
+
+def spread(items, keep):
     if len(items) <= keep:
         return items
-    head = keep // 2
-    return items[:head] + items[-(keep - head):]
+    if keep <= 1:
+        return items[-1:]
+    step = (len(items) - 1) / (keep - 1)
+    return [items[round(i * step)] for i in range(keep)]
+
+seg_pairs = [pairs(seg) for seg in segments]
+total = sum(len(p) for p in seg_pairs)
+quota = [len(p) if total <= DIGEST_PAIRS else max(2, round(DIGEST_PAIRS * len(p) / total))
+         for p in seg_pairs]
 
 out = []
 for i, seg in enumerate(segments, 1):
@@ -395,10 +427,11 @@ for i, seg in enumerate(segments, 1):
     cwd = next((t['cwd'] for t in seg if t['cwd']), '?')
     out.append('## part %d — %s — %s → %s — %d turns'
                % (i, cwd, when(seg[0]['ep']), when(seg[-1]['ep']), len(seg)))
-    for t in sample(users, 8):
-        out.append('ASKED: ' + cut(t['txt'], 400))
-    for t in sample(bots, 4):
-        out.append('REPLIED: ' + cut(t['txt'], 220))
+    for p in spread(seg_pairs[i - 1], quota[i - 1]):
+        if p['ask']:
+            out.append('ASKED: ' + cut(p['ask'], 300))
+        if p['done']:
+            out.append('DONE: ' + cut(p['done'], 400))
     if tools:
         top = sorted(tools.items(), key=lambda kv: -kv[1])[:8]
         out.append('TOOLS: ' + ', '.join('%s x%d' % (k, v) for k, v in top))
@@ -424,7 +457,7 @@ fi
 # What the model is asked for. Kept next to the digest so the two are read
 # together: the digest decides what the model can see, this decides what it
 # does with it.
-SUM_PROMPT="Below is a machine-made digest of one AI coding session: the user's asks, short excerpts of the replies, and tool counts, already split into parts.
+SUM_PROMPT="Below is a machine-made digest of one AI coding session: the user's asks, each paired with what that turn ended with (DONE), and tool counts, already split into parts.
 
 Write a summary of what was DONE in that session.
 
@@ -438,7 +471,8 @@ $SUM_LANG_RULE
 - One '### ' heading per distinct topic, 4-8 words, naming the actual subject.
 - Under each heading, 2-4 bullets. A bullet is <= 14 words, past tense, and names
   something concrete: a file, a command, a tool, a decision, a number.
-- Merge parts that are the same topic. At most 5 headings for the whole session.
+- Merge parts that are the same topic. At most 5 headings for a session held on
+  one day, at most 8 when the parts span several days.
 - Say what was decided or found, not what was discussed.
 - No preamble, no closing remarks, no restating these rules."
 
@@ -598,7 +632,7 @@ if [ -n "$SUM_ID" ]; then
 
   model=$(sum_pick_model)
   src_mtime=$(stat -c %Y "$transcript" 2>/dev/null || echo 0)
-  key="ide-sessions-sum v1 src=$src_mtime model=$model gap=$SUM_GAP lang=$SUM_LANG"
+  key="ide-sessions-sum v2 src=$src_mtime model=$model gap=$SUM_GAP lang=$SUM_LANG"
   cache_file="$SUM_CACHE/claude-$SUM_ID$SUM_FILE_SUFFIX.md"
 
   # The cache is keyed by the transcript's mtime, so a session that has since

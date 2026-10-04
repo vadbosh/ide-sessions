@@ -208,6 +208,35 @@ absent   "Jira legacy at- token"         "$out" "at-abcdefghijklmnopqrstuvwxyz01
 contains "the label stays readable"      "$out" "HW_ACCESS_KEY=<REDACTED:20>"
 contains "a 40-hex SHA with no label stays" "$out" "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"
 
+# The digest takes each turn as a pair, ask and outcome, at an even step across
+# the part. It used to keep the first and last four asks of a part, and a week
+# of work in the middle of a long session never reached the model.
+LSID="99999999-8888-7777-6666-555555555522"
+LT="$CLAUDE_DIR/projects/-work-repo/$LSID.jsonl"
+python3 - "$LT" <<'PY'
+import json, sys
+rows = []
+for i in range(150):
+    ts = "2026-03-02T10:%02d:%02d.000Z" % (i // 60, i % 60)
+    ask = ("tune the MID-%d alert" % i) if 60 <= i < 90 else ("routine ask %d" % i)
+    rows.append({"type": "user", "timestamp": ts, "cwd": "/work/repo",
+                 "message": {"content": ask}})
+    rows.append({"type": "assistant", "timestamp": ts, "cwd": "/work/repo",
+                 "message": {"content": [{"type": "text", "text": "let me check %d" % i}]}})
+    rows.append({"type": "assistant", "timestamp": ts, "cwd": "/work/repo",
+                 "message": {"content": [{"type": "text", "text": "OUTCOME-%d applied" % i}]}})
+with open(sys.argv[1], 'w') as fh:
+    for r in rows:
+        fh.write(json.dumps(r) + "\n")
+PY
+out="$("$ROOT/bin/claude-sessions" --sum "$LSID" --sum-raw 2>&1)"
+contains "digest: the middle of a long part reaches the model" "$out" "ASKED: tune the MID-"
+contains "digest: an outcome is the last reply of its turn"     "$out" "DONE: OUTCOME-"
+absent   "digest: the first reply of a turn is not the outcome" "$out" "let me check"
+n=$(printf '%s\n' "$out" | grep -c '^ASKED: ')
+if [ "$n" = 100 ]; then ok "digest: a long session is cut to the pair budget"
+else nope "digest: a long session is cut to the pair budget" "$n asks kept"; fi
+
 # Short passwords. A request body pasted from an application log carried a
 # 10-character password, and the 16-character floor of the label rule let it
 # through: shorter values under a password-family label are masked in the
@@ -617,7 +646,7 @@ echo "cache"
 export IDE_SESSIONS_SUM_CACHE="$TMP/cache"
 mkdir -p "$IDE_SESSIONS_SUM_CACHE"
 src_mtime=$(stat -c %Y "$T" 2>/dev/null || stat -f %m "$T")
-key="ide-sessions-sum v1 src=$src_mtime model=pinned gap=45 lang=en"
+key="ide-sessions-sum v2 src=$src_mtime model=pinned gap=45 lang=en"
 { printf '<!-- %s -->\n' "$key"; printf '### cached heading\n'; } \
     > "$IDE_SESSIONS_SUM_CACHE/claude-$SID.md"
 
@@ -644,7 +673,7 @@ contains "a failed model call is reported"          "$out" "returned nothing"
 # for the other language silently returns the one already stored.
 src_mtime=$(stat -c %Y "$T" 2>/dev/null || stat -f %m "$T")
 for lang in en orig; do
-    key="ide-sessions-sum v1 src=$src_mtime model=pinned gap=45 lang=$lang"
+    key="ide-sessions-sum v2 src=$src_mtime model=pinned gap=45 lang=$lang"
     suffix=""
     [ "$lang" = orig ] && suffix=".orig"
     { printf '<!-- %s -->\n' "$key"; printf '### %s heading\n' "$lang"; } \

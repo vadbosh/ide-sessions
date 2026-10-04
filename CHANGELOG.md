@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.12.0
+
+**`--sum` sees the middle of a long session.** The digest kept the first and
+last four asks and two replies at each end of a part, cut to 220 characters.
+In a week-long session the work in the middle of each stretch never reached
+the model: a cluster's metrics and alerting work came back as three bullets
+under other headings, whatever model was chosen. The digest now takes each turn
+as a pair — the ask, and what the turn ended with (the last reply before the
+next ask, not the first "let me check") — at an even step across every part,
+100 pairs for the whole session. A session over several days may have up to
+eight topics instead of five. Summaries cached by earlier versions are made
+again: the cache key moved to `v2`. All three `*-sessions`.
+
 ## 0.11.2
 
 **`ide-history` puts its heading under the rows.** Forty messages of
