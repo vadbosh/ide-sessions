@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.12.4
+
+- **A hand-edited command is backed up off `PATH`.** `install.sh` put its copy
+  beside the command as `<command>.bak.<timestamp>`: an executable on `PATH`, a
+  second, stale command. `agent-history.bak.20261001-191831` was found in
+  `~/.local/bin` this way. Every backup now goes to
+  `~/.local/state/ide-sessions/backups/`, as skill and command files already
+  did.
+
 ## 0.12.3
 
 - **macOS: in `install.sh`, paths printed as `~/…` came out as `\~/…` under bash 3.2 — the `/bin/bash`

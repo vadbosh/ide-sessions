@@ -1206,6 +1206,15 @@ if ls "$IN_HOME/.local/state/ide-sessions/backups/"claude-skills-history-SKILL.m
 else
     nope "install: a hand-edited skill is backed up outside the assistant's directory" "$(find "$IN_HOME" -name '*.bak.*')"
 fi
+# A backup on PATH is a second, stale command: agent-history.bak.* was found there.
+printf 'hand edit\n' >> "$IN_HOME/.local/bin/ide-history"
+inst
+if ls "$IN_HOME/.local/state/ide-sessions/backups/"local-bin-ide-history.bak.* >/dev/null 2>&1 \
+   && [ -z "$(find "$IN_HOME/.local/bin" -name '*.bak.*')" ]; then
+    ok "install: a hand-edited command is backed up off PATH"
+else
+    nope "install: a hand-edited command is backed up off PATH" "$(find "$IN_HOME" -name '*.bak.*')"
+fi
 inst --uninstall
 left="$(cd "$IN_HOME" && find . -type f -not -path './.local/state/*')"
 if [ -z "$left" ] && [ ! -d "$IN_HOME/.claude/skills/history" ]; then ok "install: --uninstall removes everything it installed"

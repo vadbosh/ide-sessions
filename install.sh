@@ -21,10 +21,10 @@
 #
 # Idempotent: re-running replaces only what changed. A file it overwrites is
 # backed up ONLY when that content is not already in the source repository — a
-# hand edit is the one thing git cannot give back. A command is backed up next
-# to itself; a skill or command file of an assistant goes to
+# hand edit is the one thing git cannot give back. Every backup goes to
 # ~/.local/state/ide-sessions/backups/, outside every directory an assistant
-# reads, so a backup never loads as a second skill.
+# reads and off PATH, so a backup never loads as a second skill or runs as a
+# second command.
 # Nothing outside $HOME is touched.
 set -euo pipefail
 
@@ -78,7 +78,7 @@ in_git_history() {
 }
 
 install_file() {     # install_file SRC DST [MODE] [BACKUP_DIR]
-    local src="$1" dst="$2" mode="${3:-755}" bdir="${4:-}"
+    local src="$1" dst="$2" mode="${3:-755}" bdir="${4:-$BACKUPS}"
     if [ -f "$dst" ] && cmp -s "$src" "$dst"; then
         say "    = $(tilde "$dst")"
         return 0
@@ -91,15 +91,12 @@ install_file() {     # install_file SRC DST [MODE] [BACKUP_DIR]
     if [ -f "$dst" ]; then
         if in_git_history "$dst"; then
             say "    ~ $(tilde "$dst")"
-        elif [ -n "$bdir" ]; then
+        else
             mkdir -p "$bdir"
             # the whole path, flattened: three assistants' copies of one skill
             # share a file name and must not overwrite each other's backup
             cp -p "$dst" "$bdir/$(tilde "$dst" | sed 's#^~/##; s#^/##; s#/\.#/#g; s#^\.##; s#/#-#g').bak.$STAMP"
             say "    ~ $(tilde "$dst")  (backup in $(tilde "$bdir") — not in git)"
-        else
-            cp -p "$dst" "$dst.bak.$STAMP"
-            say "    ~ $(tilde "$dst")  (backup .bak.$STAMP — edited by hand, not in git)"
         fi
     else
         say "    + $(tilde "$dst")"
