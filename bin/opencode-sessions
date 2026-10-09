@@ -194,11 +194,28 @@ fi
 # `sqlite3` CLI. The CLI is a separate package that is simply absent on many
 # machines — this one included, where the script printed "sqlite3 not found"
 # and listed nothing — while the module ships with Python itself.
+#
+# Values never enter SQL as text. `db_tsv SQL [VALUE...]` binds each VALUE to a
+# `?` in SQL; `db_tsv_ids SQL IDS` expands `{ids}` in SQL to one `?` per line of
+# IDS and binds those. A session id comes from the command line (--sum, --rm),
+# and one spliced between quotes — `--sum "x' OR '1'='1"` — is a condition that
+# matches every session, one step away from a DELETE.
 db_tsv() {
-  python3 - "$DB" "$1" <<'PY'
+  python3 - "$DB" "$@" <<'PY'
 import sqlite3, sys
 con = sqlite3.connect(sys.argv[1], timeout=10)
-for row in con.execute(sys.argv[2]):
+for row in con.execute(sys.argv[2], sys.argv[3:]):
+    print('\t'.join('' if v is None else str(v) for v in row))
+PY
+}
+
+db_tsv_ids() {
+  python3 - "$DB" "$1" "$2" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1], timeout=10)
+ids = [l for l in sys.argv[3].splitlines() if l.strip()]
+sql = sys.argv[2].replace('{ids}', ','.join('?' * len(ids)))
+for row in con.execute(sql, ids):
     print('\t'.join('' if v is None else str(v) for v in row))
 PY
 }
@@ -216,12 +233,25 @@ print(' '.join(t for t in sys.argv[2].split() if t in have))
 PY
 )
 
-db_exec() {
-  python3 - "$DB" "$1" <<'PY'
+# Delete the sessions whose ids are the lines of $1, with their rows in
+# $CHILD_TABLES, in one transaction. The ids are bound parameters; the table
+# names come from CHILD_TABLES, already checked against sqlite_master above.
+db_delete_ids() {
+  python3 - "$DB" "$1" "$CHILD_TABLES" <<'PY'
 import sqlite3, sys
-con = sqlite3.connect(sys.argv[1], timeout=10)
-con.executescript(sys.argv[2])
-con.commit()
+con = sqlite3.connect(sys.argv[1], timeout=10, isolation_level=None)
+ids = [l for l in sys.argv[2].splitlines() if l.strip()]
+if ids:
+    ph = ','.join('?' * len(ids))
+    con.execute('BEGIN IMMEDIATE')
+    try:
+        for t in sys.argv[3].split():
+            con.execute('DELETE FROM "%s" WHERE session_id IN (%s)' % (t, ph), ids)
+        con.execute('DELETE FROM session WHERE id IN (%s)' % ph, ids)
+        con.execute('COMMIT')
+    except Exception:
+        con.execute('ROLLBACK')
+        raise
 PY
 }
 
@@ -791,7 +821,7 @@ if [ -n "$SUM_ID" ]; then
   # here would override a choice the user already made for this machine, so
   # --sum-model is the only way a model name enters this script.
   model="${SUM_MODEL:-}"
-  src_mtime=$(db_tsv "SELECT time_updated FROM session WHERE id = '$SUM_ID';")
+  src_mtime=$(db_tsv "SELECT time_updated FROM session WHERE id = ?;" "$SUM_ID")
   key="ide-sessions-sum v2 src=${src_mtime:-0} model=${model:-default} gap=$SUM_GAP lang=$SUM_LANG"
   cache_file="$SUM_CACHE/opencode-$SUM_ID$SUM_FILE_SUFFIX.md"
 
@@ -845,15 +875,9 @@ PY
   # Running opencode writes a session of its own. Left alone, every summary
   # would add a row to the very list this script exists to keep readable, so
   # the scratch session is removed by the title it was given.
-  scratch=$(db_tsv "SELECT id FROM session WHERE title = 'ide-sessions --sum $SUM_ID';" || true)
+  scratch=$(db_tsv "SELECT id FROM session WHERE title = ?;" "ide-sessions --sum $SUM_ID" || true)
   if [ -n "$scratch" ]; then
-    scratch_list=$(printf '%s\n' "$scratch" | sed "s/.*/'&'/" | paste -sd, -)
-    db_exec "
-BEGIN IMMEDIATE;
-$(for t in $CHILD_TABLES; do echo "DELETE FROM $t WHERE session_id IN ($scratch_list);"; done)
-DELETE FROM session WHERE id IN ($scratch_list);
-COMMIT;
-" || true
+    db_delete_ids "$scratch" || true
   fi
 
   if [ -z "$summary" ]; then
@@ -957,18 +981,18 @@ PY
     exit 1
   fi
 
-  in_list=$(sed "s/.*/'&'/" "$ids_file" | paste -sd, -)
+  ids=$(cat "$ids_file")
 
   echo "Sessions selected for deletion:"
   echo
   printf "%-30s %-10s %-6s %-8s %-11s %s\n" "SESSION ID" "LAST" "MSGS" "COST" "DATE" "DIR"
-  db_tsv "
+  db_tsv_ids "
     SELECT s.id, s.directory, s.time_updated,
            (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id),
            printf('%.2f', COALESCE(s.cost, 0)),
            CASE WHEN s.parent_id IS NULL OR s.parent_id = '' THEN '' ELSE 'child' END
-    FROM session s WHERE s.id IN ($in_list)
-    ORDER BY s.time_updated DESC;" |
+    FROM session s WHERE s.id IN ({ids})
+    ORDER BY s.time_updated DESC;" "$ids" |
   while IFS=$'\t' read -r sid directory tupd msgs cost kind; do
     [ -z "$sid" ] && continue
     mtime=$(( tupd / 1000 ))
@@ -980,7 +1004,7 @@ PY
   echo
   echo "Row counts to be removed:"
   for t in $CHILD_TABLES; do
-    c=$(db_tsv "SELECT COUNT(*) FROM $t WHERE session_id IN ($in_list);")
+    c=$(db_tsv_ids "SELECT COUNT(*) FROM \"$t\" WHERE session_id IN ({ids});" "$ids")
     [ "$c" = 0 ] || printf '  %-24s %s\n' "$t" "$c"
   done
   printf '  %-24s %s\n' "session" "$n_total"
@@ -1022,10 +1046,12 @@ PY
   # Dump before deleting: the DB is too big to copy wholesale for every prune.
   # This replaces the CLI's `.mode insert`, quoting values the same way sqlite
   # does so the dump can be replayed with either tool.
-  python3 - "$DB" "$dump" "$stamp" "session $CHILD_TABLES" "$in_list" <<'PY'
+  python3 - "$DB" "$dump" "$stamp" "session $CHILD_TABLES" "$ids" <<'PY'
 import sqlite3, sys
 
-db, out_path, stamp, tables, in_list = sys.argv[1:6]
+db, out_path, stamp, tables, ids = sys.argv[1:6]
+ids = [l for l in ids.splitlines() if l.strip()]
+ph = ','.join('?' * len(ids))
 con = sqlite3.connect(db, timeout=10)
 
 def literal(v):
@@ -1042,7 +1068,7 @@ with open(out_path, 'w') as out:
     out.write('BEGIN;\n')
     for t in tables.split():
         col = 'id' if t == 'session' else 'session_id'
-        cur = con.execute('SELECT * FROM %s WHERE %s IN (%s)' % (t, col, in_list))
+        cur = con.execute('SELECT * FROM "%s" WHERE %s IN (%s)' % (t, col, ph), ids)
         names = [d[0] for d in cur.description]
         for row in cur:
             out.write('INSERT INTO %s(%s) VALUES(%s);\n'
@@ -1063,14 +1089,9 @@ PY
     done
   done < "$ids_file"
 
-  db_exec "
-BEGIN IMMEDIATE;
-$(for t in $CHILD_TABLES; do echo "DELETE FROM $t WHERE session_id IN ($in_list);"; done)
-DELETE FROM session WHERE id IN ($in_list);
-COMMIT;
-"
+  db_delete_ids "$ids"
 
-  left=$(db_tsv "SELECT COUNT(*) FROM session WHERE id IN ($in_list);")
+  left=$(db_tsv_ids "SELECT COUNT(*) FROM session WHERE id IN ({ids});" "$ids")
 
   echo
   echo "Deleted $n_total session(s). Remaining matching rows in session: $left (expect 0)."

@@ -531,6 +531,49 @@ print(sum(db.execute('SELECT COUNT(*) FROM ' + t).fetchone()[0]
 if [ "$left" = 0 ]; then ok "child tables go with the session"
 else nope "child tables go with the session" "rows left: $left"; fi
 
+# A session id is spliced into SQL nowhere. The scratch session opencode writes
+# for a summary is found by its title, and the title carries the id: when the id
+# went between quotes, `ses_q' OR '1'='1` made that lookup match every session,
+# and the delete that follows took the whole database with it.
+QID="ses_q' OR '1'='1"
+python3 - "$OPENCODE_DATA_DIR/opencode.db" "$QID" <<'PY'
+import sqlite3, json, sys
+con = sqlite3.connect(sys.argv[1])
+for sid, title in ((sys.argv[2], 'quoted id'), ('ses_bystander', 'keep me')):
+    con.execute("INSERT INTO session VALUES (?,?,?,?,?,?,?,?)",
+                (sid, 'prj', None, '/opt/site', title, 0, 1772445600000, 1772445609000))
+    con.execute("INSERT INTO message VALUES (?,?,?,?,?)",
+                ('m_' + title, sid, 1772445600000, 1772445600000, json.dumps({'role': 'user'})))
+    con.execute("INSERT INTO part VALUES (?,?,?,?,?,?)",
+                ('p_' + title, 'm_' + title, sid, 1772445600000, 1772445600000,
+                 json.dumps({'type': 'text', 'text': 'hello'})))
+con.commit()
+PY
+mkdir -p "$TMP/stub-oc"
+cat > "$TMP/stub-oc/opencode" <<'STUB'
+#!/usr/bin/env bash
+# Writes the scratch session a real `opencode run --title T` leaves behind.
+title=""
+while [ $# -gt 0 ]; do [ "$1" = --title ] && title="$2"; shift; done
+python3 - "$OPENCODE_DATA_DIR/opencode.db" "$title" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.execute("INSERT INTO session(id, title, directory, time_updated) VALUES ('ses_scratch', ?, '/tmp', 1)",
+            (sys.argv[2],))
+con.commit()
+PY
+printf '%s\n' '{"type":"text","part":{"text":"### stub oc summary"}}'
+STUB
+chmod 755 "$TMP/stub-oc/opencode"
+out="$(PATH="$TMP/stub-oc:$PATH" "$ROOT/bin/opencode-sessions" --sum "$QID" --sum-refresh 2>&1)"
+contains "opencode: a quoted id is summarized" "$out" "### stub oc summary"
+left=$(python3 -c "
+import sqlite3, sys
+print(' '.join(r[0] for r in sqlite3.connect(sys.argv[1]).execute('SELECT id FROM session ORDER BY id')))
+" "$OPENCODE_DATA_DIR/opencode.db")
+if [ "$left" = "ses_bystander ses_q' OR '1'='1" ]; then ok "a quoted id removes only the scratch session"
+else nope "a quoted id removes only the scratch session" "sessions now: $left"; fi
+
 # ── summarizing leaves no session of its own ───────────────────────────────
 # `claude -p` and `codex exec` are sessions like any other, so every --sum used
 # to add a row to the listing this tool exists to keep readable. Stubs stand in

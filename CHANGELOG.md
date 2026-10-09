@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.13.1
+
+- **`opencode-sessions --sum` could delete every session in the database.**
+  After a summary, the script deletes the scratch session that `opencode run`
+  wrote. It found that session by a title containing the session id, and put
+  the id into the SQL text between quotes. For an id such as
+  `ses_q' OR '1'='1`, the lookup matched every session, and the delete removed
+  all of them. The ids of real opencode sessions contain no quotes, so this
+  needed a crafted database. Now every value goes into SQL as a bound
+  parameter: the id, the title and the id lists of `--rm`.
+
 ## 0.13.0
 
 - **Nine kinds of credential reached the summarizing model and the summary
