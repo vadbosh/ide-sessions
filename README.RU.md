@@ -453,8 +453,9 @@ ASKED: checked out 9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c from main
 
 **Уровень 1, решает форма.** `ghp_`, `github_pat_`, `AKIA`, `glpat-`, `xox…`,
 `sk-` (включая `sk-ant-`, `sk-proj-`, `sk-or-v1-`), `AIza`, `sk_live_`,
-`tvly-`, `hf_`, `dckr_pat_`, атлассиановские `ATATT` и `at-`, JWT, строка
-`BEGIN … PRIVATE KEY`, пароль внутри URL. Маскируется везде, где встретится.
+`tvly-`, `hf_`, `dckr_pat_`, атлассиановские `ATATT` и `at-`, JWT, приватный
+ключ целиком — от строки `BEGIN` до строки `END`, пароль внутри URL.
+Маскируется везде, где встретится.
 
 **Уровень 2, решает имя.** Huawei Cloud и OpenStack — причина, по которой этот
 уровень вообще нужен. Их access key — 20 символов заглавных и цифр, secret — 40
@@ -464,8 +465,19 @@ ASKED: checked out 9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c from main
 похожее на имя ключа:
 
 - `HW_ACCESS_KEY=`, `HUAWEICLOUD_SDK_AK=`, `OS_SECRET_KEY:`;
-- `--token`, `--pass`, `Authorization: Bearer`;
+- `--token`, `--pass`, `Authorization: Bearer` и `Basic`, `client-key-data:`;
 - любое имя со словом password, secret, token, credential.
+
+В некоторых записях значение стоит не рядом с именем. Такие записи выжимка
+распознаёт по их виду:
+
+- переменные окружения в формате Kubernetes: `name: DB_PASSWORD`, а `value: …`
+  в том же JSON-объекте или на следующей строке YAML;
+- `curl -u user:password` и `mysql -pPASSWORD` — только в строке, где
+  запускается эта программа: `docker -u 1000:1000` и `ssh -p 2222` не
+  трогаются;
+- ключ, который стоит на строке один, если в одной из двух строк над ним есть
+  слово о ключах.
 
 Есть и мягкое условие: значение маскируется, если слово о ключах стоит где-то в
 той же строке, по-английски или по-русски.
@@ -476,6 +488,14 @@ ASKED: checked out 9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c from main
 
 Jira попадает в оба уровня: у API-токена есть префикс `ATATT`, а
 `jira --token …` ловится по флагу.
+
+Все эти шаблоны — запасной вариант. Если на `PATH` есть `secrets-redact` из
+[env2hell](https://github.com/vadbosh/env2hell), готовая выжимка один раз
+проходит и через него. Это та же маскировка, что стоит в хуках Claude Code,
+Codex и opencode, и у неё свои тесты. `IDE_SESSIONS_REDACTOR` задаёт другую
+программу, а пустое значение отключает этот шаг. Если программа установлена,
+но завершилась ошибкой, `--sum` и `--sum-raw` останавливаются с сообщением
+`Not sent: the secrets redactor failed` и модель не вызывают.
 
 Промпт вдобавок запрещает выписывать ключи, файлы кэша создаются с правами
 `0600`, каталог — `0700`. Ключ, который уже попал в транскрипт, эти меры не
@@ -571,6 +591,7 @@ summarized with claude-haiku-4-5-20251001
 |---|---|---|
 | `IDE_SESSIONS_SUM_MODEL` | не задана | модель для `--sum` |
 | `IDE_SESSIONS_SUM_CACHE` | `~/.cache/ide-sessions-summaries` | кэш сводок |
+| `IDE_SESSIONS_REDACTOR` | `secrets-redact` с `PATH` | через что проходит выжимка; пустое значение — только встроенные шаблоны |
 | `IDE_SESSIONS_TRASH` | `~/.cache/ide-sessions-trash` | куда уходит удалённое |
 | `IDE_SESSIONS_MODELS_JSON` | не задана | каталог models.dev для цен |
 | `IDE_SESSIONS_BIN_DIR` | `~/.local/bin` | куда пишет `install.sh` |

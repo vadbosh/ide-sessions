@@ -239,7 +239,7 @@ PROVIDER = re.compile(
     r'|tvly-[A-Za-z0-9-]{10,}'
     r'|AIza[A-Za-z0-9_-]{35}'
     r'|(?:sk|rk)_live_[A-Za-z0-9]{20,}'
-    r'|sk-(?:or-v1-|proj-|ant-)?[A-Za-z0-9-]{20,}'
+    r'|sk-(?:or-v1-|proj-|ant-)?[A-Za-z0-9_-]{20,}'
     r'|ATATT[A-Za-z0-9_=.-]{20,}'
     r'|at-[A-Za-z0-9]{30,}'
     r'|hf_[A-Za-z0-9]{30,}'
@@ -249,7 +249,12 @@ PROVIDER = re.compile(
 
 # Credentials inside a URL. Separate from the list above so the scheme and host
 # survive: postgres://admin:pw@db/app is worth reading as "postgres, db, app".
-URL_CRED = re.compile(r'://[^/:@\s]+:([^/:@\s]{3,})@')
+# The password runs to the first @, not to the first slash: a generated
+# password holds a / as often as any other symbol, and stopping there let the
+# rest of it through. host:8080/path@x is the one shape this would misread —
+# a port followed by a path — so a value that starts with a port is left alone.
+URL_CRED = re.compile(r'(://[^/:@\s]+:)([^@\s]{3,}?)(@)')
+URL_PORT = re.compile(r'\d{1,5}(?:/|$)')
 
 # A label and the value after it. The label is what a secret is called; the
 # value is only required to be long, because its shape says nothing.
@@ -263,6 +268,10 @@ URL_CRED = re.compile(r'://[^/:@\s]+:([^/:@\s]{3,})@')
 LABEL = (r'(?:--?)?(?:pass|passwd|password|passphrase|pass-phrase'
          r'|token|secret|api[-_]?key|apikey|auth[-_]?token|access[-_]?key'
          r'|secret[-_]?key|client[-_]?secret|private[-_]?key|credential'
+         # Authorization: Basic … carries user:password in base64, and a
+         # kubeconfig's client-key-data is a whole private key in base64 —
+         # neither has a prefix to recognise, only the name in front of it.
+         r'|(?:proxy[-_])?authorization|client[-_]key[-_]data'
          r'|jira[-_]?(?:api[-_]?)?token'
          r'|hw[-_]?(?:access|secret)(?:[-_]?key)?'
          r'|huaweicloud?[-_]?[a-z_]*key'
@@ -278,7 +287,7 @@ VALUE = r'[A-Za-z0-9+/=_.~-]{16,}'
 # A quoted key closes its quote before the separator — "password":"…" in JSON,
 # \"password\":\"…\" in JSON pasted into JSON — so the closing quote and its
 # escape are allowed there; without them a logged request body passed untouched.
-NAMED = re.compile(r'(%s)(\\?[\'"]?\s*[=:]\s*(?:Bearer\s+)?)(\\?[\'"]?)(%s)' % (LABEL, VALUE), re.I)
+NAMED = re.compile(r'(%s)(\\?[\'"]?\s*[=:]\s*(?:(?:Bearer|Basic|Token|Digest)\s+)?)(\\?[\'"]?)(%s)' % (LABEL, VALUE), re.I)
 FLAGGED = re.compile(r'(%s)(\s+)([\'"]?)(%s)' % (LABEL, VALUE), re.I)
 
 # A password is short far more often than a key, and the 16-character floor let
@@ -296,17 +305,110 @@ NAMED_PW = re.compile(r'(%s)(\\?[\'"]?\s*[=:]\s*)(\\?[\'"]?)(%s)' % (PW_LABEL, P
 CRED_WORD = re.compile(
     r'token|secret|password|passwd|credential|api[ _-]?key|access[ _-]?key'
     r'|huawei|openstack|jira|токен|пароль|секрет|ключ', re.I)
-HIGH_ENTROPY = re.compile(r'\b[A-Za-z0-9_-]{40,}\b|\b[A-Fa-f0-9]{32,}\b')
+# The third branch is base64: + and / split a key into runs shorter than 40, so
+# without it an AWS secret key beside the word 'secret' passed in pieces. It
+# needs a digit and both cases, which a path or a word never has all of.
+HIGH_ENTROPY = re.compile(
+    r'\b[A-Za-z0-9_-]{40,}\b|\b[A-Fa-f0-9]{32,}\b'
+    r'|(?<![A-Za-z0-9+/])(?=[A-Za-z0-9+/]*[0-9])(?=[A-Za-z0-9+/]*[A-Z])'
+    r'(?=[A-Za-z0-9+/]*[a-z])[A-Za-z0-9+/]{40,}={0,2}')
+
+# The value one or two lines below its label: "the AWS secret is below" and
+# then the key, alone on its line. Only a line that is nothing but one long
+# run counts, so a SHA inside a sentence after a mention of a token stays.
+LONE_TOKEN = re.compile(r'^(\s*[\'"]?)([A-Za-z0-9+/_=.~-]{20,})([\'"]?\s*)$')
+
+# A private key is a block, not a token: the header line is all the PROVIDER
+# tier sees, and the base64 body below it went through line by line. Everything
+# from BEGIN to END is masked; a key with no END is masked to the end of the
+# text. PEM_INLINE is the same key pasted into JSON, with \n escapes.
+PEM_BEGIN = re.compile(r'-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----')
+PEM_END = re.compile(r'-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----')
+PEM_INLINE = re.compile(r'-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----'
+                        r'.*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----')
+
+# Environment as Kubernetes writes it: the name and the value are separate
+# fields, so no label stands beside the value. In JSON both are on one line;
+# in YAML the value is on the next one.
+CRED_NAME = (r'[A-Za-z0-9_.-]*(?:pass(?:wd|word|phrase)?|pwd|token|secret'
+             r'|api[-_]?key|apikey|access[-_]?key|private[-_]?key|credential'
+             r'|authorization)[A-Za-z0-9_.-]*')
+NAME_VALUE = re.compile(
+    r'(\\?[\'"]?name\\?[\'"]?\s*[:=]\s*\\?[\'"]?%s\\?[\'"]?\s*,\s*'
+    r'\\?[\'"]?value\\?[\'"]?\s*[:=]\s*\\?[\'"]?)([^\s\'"\\,}]{6,})' % CRED_NAME, re.I)
+YAML_NAME = re.compile(r'^\s*-?\s*name:\s*[\'"]?%s[\'"]?\s*$' % CRED_NAME, re.I)
+YAML_VALUE = re.compile(r'^(\s*value:\s*[\'"]?)([^\s\'"]{6,})')
+
+# Two command lines that put a password right after a flag with no name a
+# label could match: curl -u user:password and mysql -pPASSWORD. Each is
+# masked only on a line that runs that program, so docker -u 1000:1000 and
+# ssh -p 2222 stay as they are.
+CURL_LINE = re.compile(r'\b(?:curl|wget|http)\b')
+CURL_U = re.compile(r'((?:^|\s)(?:-u|--user)(?:\s+|=)?[\'"]?[^\s:\'"]+:)([^\s\'"]{3,})')
+MYSQL_P = re.compile(r'(\b(?:mysql|mysqldump|mysqladmin|mariadb(?:-dump|-admin)?)\b'
+                     r'[^\n]*?\s-p)([^\s\'"]{3,})')
+
+# The patterns here are a fallback. The masking that is maintained — tested
+# against a corpus, shared with the Claude Code, Codex and Opencode hooks — is
+# secrets-redact from env2hell, and scrub() runs the finished text through it
+# once when it is installed. Once, not per message: it is a process, and a
+# long session has thousands of messages.
+#
+# IDE_SESSIONS_REDACTOR names another program, or turns it off when empty.
+# A redactor that is installed but fails is not skipped quietly where the
+# text is about to leave the machine: strict=True raises, and --sum stops
+# rather than send what only the fallback has seen.
+import os as _os, shutil as _shutil, subprocess as _subprocess
+
+class RedactorFailed(Exception):
+    pass
+
+def scrub(text, strict=False):
+    tool = _os.environ.get('IDE_SESSIONS_REDACTOR')
+    if tool is None:
+        tool = _shutil.which('secrets-redact') or ''
+    if not tool or not text.strip():
+        return text
+    try:
+        # --filter answers 0 when it masked something and 1 when the text
+        # came through unchanged; anything else, or no text back, is a failure.
+        p = _subprocess.run([tool, '--filter'], input=text, capture_output=True,
+                            text=True, timeout=120)
+        if p.returncode in (0, 1) and p.stdout.strip():
+            return p.stdout
+        why = 'exit %d%s' % (p.returncode, '' if p.stdout.strip() else ', no output')
+    except (OSError, _subprocess.SubprocessError) as e:
+        why = str(e)
+    if strict:
+        raise RedactorFailed('%s: %s' % (tool, why))
+    return text
 
 def mask(m):
     return '<REDACTED:%d>' % len(m.group(0))
 
 def redact(text):
     out = []
+    in_key = False          # inside a private key block
+    yaml_name = 0           # lines left in which a YAML value: belongs to a credential name
+    carry = 0               # lines left in which a lone token belongs to a label above it
     for line in (text or '').splitlines():
+        if in_key:
+            if PEM_END.search(line):
+                in_key = False
+                line = PEM_END.sub(mask, line)
+            else:
+                body = line.strip()
+                line = line[:len(line) - len(line.lstrip())] + (
+                    '<REDACTED:%d>' % len(body) if body else '')
+            out.append(line)
+            continue
+        line = PEM_INLINE.sub(mask, line)
+        if PEM_BEGIN.search(line) and not PEM_END.search(line):
+            in_key = True
         line = PROVIDER.sub(mask, line)
         line = URL_CRED.sub(
-            lambda m: '://<REDACTED:%d>@' % len(m.group(1)), line)
+            lambda m: m.group(0) if URL_PORT.match(m.group(2))
+            else '%s<REDACTED:%d>%s' % (m.group(1), len(m.group(2)), m.group(3)), line)
         # A value already masked is left alone: masking the marker again would
         # overwrite the real length with the marker's own.
         for pat in (NAMED, FLAGGED, NAMED_PW):
@@ -315,8 +417,25 @@ def redact(text):
                 else '%s%s%s<REDACTED:%d>' % (m.group(1), m.group(2),
                                               m.group(3), len(m.group(4))),
                 line)
+        line = NAME_VALUE.sub(
+            lambda m: '%s<REDACTED:%d>' % (m.group(1), len(m.group(2))), line)
+        if yaml_name:
+            line = YAML_VALUE.sub(
+                lambda m: '%s<REDACTED:%d>' % (m.group(1), len(m.group(2))), line)
+        yaml_name = 2 if YAML_NAME.search(line) else max(yaml_name - 1, 0)
+        if CURL_LINE.search(line):
+            line = CURL_U.sub(
+                lambda m: '%s<REDACTED:%d>' % (m.group(1), len(m.group(2))), line)
+        line = MYSQL_P.sub(
+            lambda m: '%s<REDACTED:%d>' % (m.group(1), len(m.group(2))), line)
         if CRED_WORD.search(line):
             line = HIGH_ENTROPY.sub(mask, line)
+            carry = 2
+        else:
+            if carry and LONE_TOKEN.match(line) and not line.strip().startswith('<REDACTED:'):
+                line = LONE_TOKEN.sub(
+                    lambda m: '%s<REDACTED:%d>%s' % (m.group(1), len(m.group(2)), m.group(3)), line)
+            carry = max(carry - 1, 0)
         out.append(line)
     return '\n'.join(out)
 
@@ -437,7 +556,15 @@ for i, seg in enumerate(segments, 1):
         out.append('TOOLS: ' + ', '.join('%s x%d' % (k, v) for k, v in top))
     out.append('')
 
-print('\n'.join(out))
+# The digest is what leaves the machine, so it is what the shared redactor
+# sees — once, whole. Exit 5: it is installed and failed, nothing is sent.
+try:
+    print(scrub('\n'.join(out), strict=True))
+except RedactorFailed as e:
+    sys.stderr.write('Not sent: the secrets redactor failed (%s).\n'
+                     'Fix it, or set IDE_SESSIONS_REDACTOR= to mask with the built-in '
+                     'patterns only.\n' % e)
+    sys.exit(5)
 PY
 }
 
@@ -624,6 +751,7 @@ if [ -n "$SUM_ID" ]; then
 
   if [ "$SUM_RAW" = 1 ]; then
     sum_digest "$transcript" || {
+      [ $? = 5 ] && exit 1
       echo "Nothing to summarize: $SUM_ID has no user or assistant turns." >&2
       exit 1
     }
@@ -647,6 +775,7 @@ if [ -n "$SUM_ID" ]; then
   fi
 
   digest=$(sum_digest "$transcript") || {
+    [ $? = 5 ] && exit 1
     echo "Nothing to summarize: $SUM_ID has no user or assistant turns." >&2
     exit 1
   }

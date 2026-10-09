@@ -270,6 +270,91 @@ absent   "a short password by variable name"  "$out" "k3ttle!"
 contains "a password field with a word stays" "$out" "password: required"
 contains "'pass' as a verb stays"             "$out" "pass through 123abc"
 
+# Nine shapes the built-in patterns let through until 0.13.0, each found by
+# feeding the block a value and finding it again in the output. The values are
+# generated, not written here, so this file carries nothing secret-shaped for a
+# scanner to stop on; the generator writes them to a file for the checks below.
+LSID="99999999-8888-7777-6666-444444444444"
+LT="$CLAUDE_DIR/projects/-work-repo/$LSID.jsonl"
+LV="$TMP/leak-values"
+python3 - "$LT" "$LV" <<'PY'
+import json, random, sys
+r = random.Random(13)
+def run(n, al='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'):
+    return ''.join(r.choice(al) for _ in range(n))
+b64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+def turn(text):
+    return {"type": "user", "timestamp": "2026-03-02T10:00:00.000Z", "cwd": "/work/repo",
+            "message": {"content": [{"type": "text", "text": text}]}}
+key_body = [run(64, b64) for _ in range(3)]
+sk = 'sk-' + 'ant-' + 'api03-' + run(24) + '_' + run(40, 'abcdefghijklmnopqrstuvwxyz0123456789')
+k8s, yml, url_pw = run(32), run(24), 'Xy7/' + run(14)
+basic, aws = run(36) + '==', 'aB3' + run(37, b64)
+curl_pw, mysql_pw = 'S3' + run(12), 'Mq9' + run(12)
+head, foot = '-----BEGIN RSA PRIVATE' + ' KEY-----', '-----END RSA PRIVATE' + ' KEY-----'
+rows = [
+    turn('\n'.join([head] + key_body + [foot])),
+    turn('use %s for the summary' % sk),
+    turn('{"name":"STRIPE_API_KEY","value":"%s"}' % k8s),
+    turn('env:\n- name: DB_PASSWORD\n  value: "%s"' % yml),
+    turn('psql postgres://admin:%s@db.internal/app' % url_pw),
+    turn('Authorization: Basic %s' % basic),
+    turn('the AWS secret is below\n%s' % aws),
+    turn('curl -u admin:%s https://api.example/v1' % curl_pw),
+    turn('mysql -uroot -p%s shop' % mysql_pw),
+    turn('docker run -u 1000:1000 img; ssh -p 2222 host; https://reg.example:443/@scope/pkg'),
+]
+with open(sys.argv[1], 'w') as fh:
+    for row in rows:
+        fh.write(json.dumps(row) + "\n")
+with open(sys.argv[2], 'w') as fh:
+    # The tail of the sk- key: the part after the underscore is what leaked.
+    for name, v in [('PEM body', key_body[1]), ('sk- key after _', sk[-40:]),
+                    ('JSON name/value', k8s), ('YAML name/value', yml),
+                    ('URL password with /', url_pw), ('Basic auth', basic),
+                    ('a key on the line below its label', aws),
+                    ('curl -u', curl_pw), ('mysql -p', mysql_pw)]:
+        fh.write('%s\t%s\n' % (name, v))
+PY
+
+for mode in shared builtin; do
+    if [ "$mode" = builtin ]; then
+        out="$(IDE_SESSIONS_REDACTOR= "$ROOT/bin/claude-sessions" --sum "$LSID" --sum-raw 2>&1)"
+    else
+        out="$("$ROOT/bin/claude-sessions" --sum "$LSID" --sum-raw 2>&1)"
+    fi
+    while IFS="$(printf '\t')" read -r name value; do
+        absent "$mode: $name is masked" "$out" "$value"
+    done < "$LV"
+done
+contains "a uid pair after -u stays outside curl" "$out" "-u 1000:1000"
+contains "a port after -p stays"                  "$out" "-p 2222"
+contains "a port before a path stays in a URL"    "$out" "reg.example:443/@scope/pkg"
+
+# The shared redactor sees the digest, once and whole: a stand-in that marks
+# what passed through it shows that it ran.
+FAKE="$TMP/fake-redactor"
+mkdir -p "$FAKE"
+printf '#!/bin/sh\nsed "s/values file/values file [seen by the shared redactor]/"\n' > "$FAKE/marks"
+printf '#!/bin/sh\ncat >/dev/null\nexit 3\n' > "$FAKE/broken"
+printf '#!/bin/sh\necho called >> "%s/model-called"\necho summary\n' "$FAKE" > "$FAKE/claude"
+chmod +x "$FAKE/marks" "$FAKE/broken" "$FAKE/claude"
+out="$(IDE_SESSIONS_REDACTOR="$FAKE/marks" "$ROOT/bin/claude-sessions" --sum "$RSID" --sum-raw 2>&1)"
+contains "the digest goes through the shared redactor" "$out" "[seen by the shared redactor]"
+
+# Installed and failing: the digest is not printed, and --sum does not reach the
+# model with text only the fallback has seen.
+out="$(IDE_SESSIONS_REDACTOR="$FAKE/broken" "$ROOT/bin/claude-sessions" --sum "$RSID" --sum-raw 2>&1)"; rc=$?
+if [ "$rc" = 1 ]; then ok "a failing redactor stops --sum-raw"
+else nope "a failing redactor stops --sum-raw" "exit $rc"; fi
+contains "it says why"                           "$out" "Not sent: the secrets redactor failed"
+absent   "and prints no digest"                  "$out" "values file"
+absent   "nor the 'nothing to summarize' line"   "$out" "Nothing to summarize"
+IDE_SESSIONS_REDACTOR="$FAKE/broken" PATH="$FAKE:$PATH" \
+    "$ROOT/bin/claude-sessions" --sum "$RSID" --sum-refresh >/dev/null 2>&1; rc=$?
+if [ "$rc" = 1 ] && [ ! -e "$FAKE/model-called" ]; then ok "a failing redactor keeps --sum from calling the model"
+else nope "a failing redactor keeps --sum from calling the model" "exit $rc, model called: $([ -e "$FAKE/model-called" ] && echo yes || echo no)"; fi
+
 # ── codex ───────────────────────────────────────────────────────────────────
 echo "codex-sessions"
 

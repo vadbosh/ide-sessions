@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.13.0
+
+- **Nine kinds of credential reached the summarizing model and the summary
+  cache unmasked.** A security review fed the redaction block one value of each
+  kind and found every one in the `--sum-raw` output:
+  - the body of a private key — only its `BEGIN` line was masked;
+  - the part of an `sk-ant-api03-…` key after an underscore;
+  - a Kubernetes environment entry in JSON;
+  - the same entry in YAML;
+  - a URL password that contains `/`;
+  - `Authorization: Basic …`;
+  - a key on the line below its label;
+  - `curl -u user:password`;
+  - `mysql -pPASSWORD`.
+
+  All nine are masked now, in the same block in all four scripts.
+- **The digest also goes through `secrets-redact` from env2hell when it is
+  installed.** It runs once over the finished digest, not once per message.
+  `IDE_SESSIONS_REDACTOR` names another program, or turns this off when empty.
+  A redactor that is installed and fails stops `--sum` and `--sum-raw` with
+  `Not sent: the secrets redactor failed`, before any model is called.
+  `ide-history` passes its screen output through the same redactor, but falls
+  back to the built-in patterns there instead of stopping.
+
 ## 0.12.4
 
 - **A hand-edited command is backed up off `PATH`.** `install.sh` put its copy

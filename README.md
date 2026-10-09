@@ -452,8 +452,8 @@ Two tiers, because shape alone cannot decide.
 **Tier 1, the shape decides.** `ghp_`, `github_pat_`, `AKIA`, `glpat-`,
 `xox…`, `sk-` (including `sk-ant-`, `sk-proj-`, `sk-or-v1-`), `AIza`,
 `sk_live_`, `tvly-`, `hf_`, `dckr_pat_`, Atlassian `ATATT` and `at-`, a JWT, a
-`BEGIN … PRIVATE KEY` line, a password inside a URL. Masked wherever it
-appears.
+private key from its `BEGIN` line to its `END` line, a password inside a URL.
+Masked wherever it appears.
 
 **Tier 2, the name decides.** Huawei Cloud and OpenStack are the reason this
 tier has to exist. Their access key is 20 characters of upper case and digits,
@@ -463,8 +463,18 @@ everything else too. So a long value is masked when the thing beside it is
 named like a credential:
 
 - `HW_ACCESS_KEY=`, `HUAWEICLOUD_SDK_AK=`, `OS_SECRET_KEY:`;
-- `--token`, `--pass`, `Authorization: Bearer`;
+- `--token`, `--pass`, `Authorization: Bearer` and `Basic`, `client-key-data:`;
 - anything whose name contains password, secret, token, credential.
+
+A few shapes put the value away from its name, and each is matched as it is
+written:
+
+- Kubernetes environment entries, `name: DB_PASSWORD` with `value: …` in the
+  same JSON object or on the next YAML line;
+- `curl -u user:password` and `mysql -pPASSWORD`, only on a line that runs that
+  program — `docker -u 1000:1000` and `ssh -p 2222` stay;
+- a key alone on its line, at most two lines below a line with a credential
+  word.
 
 More loosely, a value is masked when a credential word appears anywhere on the
 line, in English or in Russian.
@@ -475,6 +485,14 @@ own commits answers nothing.
 
 Jira lands in both tiers: an API token carries `ATATT`, while `jira --token …`
 is caught by the flag.
+
+These patterns are the fallback. When `secrets-redact` from
+[env2hell](https://github.com/vadbosh/env2hell) is on `PATH`, the finished
+digest also goes through it, once. It is the redactor that the Claude Code,
+Codex and opencode hooks use, and it has its own tests. `IDE_SESSIONS_REDACTOR`
+names another program, or turns this step off when it is set to an empty
+string. If the redactor is installed but fails, `--sum` and `--sum-raw` stop
+with `Not sent: the secrets redactor failed` and call no model.
 
 The prompt also forbids writing a credential out, cached summaries are `0600`
 and their directory `0700`. None of this recovers a key that was already in the
@@ -569,6 +587,7 @@ summarized with claude-haiku-4-5-20251001
 |---|---|---|
 | `IDE_SESSIONS_SUM_MODEL` | unset | model for `--sum` |
 | `IDE_SESSIONS_SUM_CACHE` | `~/.cache/ide-sessions-summaries` | cached summaries |
+| `IDE_SESSIONS_REDACTOR` | `secrets-redact` on `PATH` | the redactor the digest goes through; empty — the built-in patterns only |
 | `IDE_SESSIONS_TRASH` | `~/.cache/ide-sessions-trash` | where deletes go |
 | `IDE_SESSIONS_MODELS_JSON` | unset | a models.dev catalogue to price against |
 | `IDE_SESSIONS_BIN_DIR` | `~/.local/bin` | where `install.sh` writes |
