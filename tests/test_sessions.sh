@@ -690,6 +690,17 @@ else
     nope "the removed summary is in the trash" "not found under $IDE_SESSIONS_TRASH"
 fi
 
+# The trash holds whole conversations: this user only, as the summary cache is.
+mode() { python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$1" 2>/dev/null; }
+bad=""
+for d in "$IDE_SESSIONS_TRASH" "$IDE_SESSIONS_TRASH"/codex-*; do
+    [ "$(mode "$d")" = 700 ] || bad="$bad $d=$(mode "$d")"
+done
+if [ -z "$bad" ]; then ok "the trash directories are 700"; else nope "the trash directories are 700" "$bad"; fi
+dump=$(find "$HOME/.cache/ide-sessions-trash" -name rows.sql 2>/dev/null | head -1)
+if [ -n "$dump" ] && [ "$(mode "$dump")" = 600 ]; then ok "opencode: the row dump is 600"
+else nope "opencode: the row dump is 600" "${dump:-no dump}: $(mode "$dump")"; fi
+
 # ── --rm-all ────────────────────────────────────────────────────────────────
 # Deleting everything in one project used to mean --older-than 0, which reads
 # as "older than nothing" and appears in no help text.

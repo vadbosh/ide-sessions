@@ -1290,6 +1290,12 @@ PY
   stamp=$(date +%Y%m%d-%H%M%S)
   trash="$TRASH_ROOT/opencode-$stamp"
   mkdir -p "$trash"
+  # The trash holds whole conversations, a key pasted into one included, so
+  # it is this user's only, like the summary cache: 0700 on the directories.
+  chmod 700 "$TRASH_ROOT" "$trash" 2>/dev/null || true
+  # The dump is the same text as rows: 0600, set before anything goes in.
+  : > "$trash/rows.sql"
+  chmod 600 "$trash/rows.sql" 2>/dev/null || true
   dump="$trash/rows.sql"
 
   # Dump before deleting: the DB is too big to copy wholesale for every prune.

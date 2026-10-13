@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.2
+
+- **The trash was readable by other users.** `--rm` created the trash
+  directories with the default umask, 755, and `opencode-sessions` wrote its
+  row dump `rows.sql` as 644. The dump holds the whole text of the deleted
+  sessions, a key pasted into one included. The trash directories are now 700
+  and the dump 600, set before anything is written, as the summary cache has
+  been since 0.13.0.
+
 ## 0.14.1
 
 - **`codex-sessions` listed every subagent as another row of its session.** In

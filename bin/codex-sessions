@@ -1293,6 +1293,9 @@ if [ "$DELETE_MODE" = 1 ]; then
   stamp=$(date +%Y%m%d-%H%M%S)
   trash="$TRASH_ROOT/codex-$stamp"
   mkdir -p "$trash"
+  # The trash holds whole conversations, a key pasted into one included, so
+  # it is this user's only, like the summary cache: 0700 on the directories.
+  chmod 700 "$TRASH_ROOT" "$trash" 2>/dev/null || true
 
   moved=0
   while IFS= read -r p; do
