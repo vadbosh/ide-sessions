@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.14.0
+
+- **The listing has an ABOUT column for long sessions.** For a session of 500
+  turns or more (messages in opencode), it shows the subject of the last commit
+  and the last three files the session edited. Both come from the session's own
+  tool calls, so no model is called and the line keeps the language of the
+  session. No repository is needed. Without a commit the line shows only the
+  files; without edits, the last request. The commit message is found in
+  `-m`, in a heredoc and in a `-F` file that the session wrote itself. A
+  `git commit` quoted inside another command is not counted. The line goes
+  through the same masking as the digest of `--sum`. `--about-min N` moves the threshold.
+  On a terminal a long line wraps instead of being cut, so all of it is
+  visible; in a pipe it stays on one line.
+
 ## 0.13.1
 
 - **`opencode-sessions --sum` could delete every session in the database.**

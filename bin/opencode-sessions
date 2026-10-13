@@ -39,6 +39,7 @@ RM_ALL=0
 EVERYWHERE=0
 OLDER_THAN=""
 MAX_TURNS=""
+ABOUT_MIN=500
 APPLY=0
 ASSUME_YES=0
 DRY_RUN=0
@@ -67,6 +68,8 @@ Usage: opencode-sessions [-n LIMIT] [-f] [-p] [substring]
   -f                full dir path instead of last 3 components
   -p                only sessions whose directory == $PWD exactly
   substring         filter by dir substring
+  --about-min N     ABOUT column for sessions of N turns or more: the last
+                    commit and the last files edited (default: 500)
 
 Summary of one session, grouped by topic (English unless --sum-orig):
   --sum ID          summarize that session; the result is cached per session
@@ -138,6 +141,7 @@ while [ $# -gt 0 ]; do
       case "${1:-}" in ''|-*) ;; *) SUM_ID="$1"; shift ;; esac ;;
     --older-than) OLDER_THAN="$2"; shift 2 ;;
     --max-turns) MAX_TURNS="$2"; shift 2 ;;
+    --about-min) ABOUT_MIN="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
     --trash) TRASH_ROOT="$2"; shift 2 ;;
     --apply) APPLY=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
@@ -180,6 +184,9 @@ for n in "$OLDER_THAN" "$MAX_TURNS"; do
     *[!0-9]*) echo "--older-than/--max-turns want a plain number, got: $n" >&2; exit 1 ;;
   esac
 done
+case "$ABOUT_MIN" in
+  ''|*[!0-9]*) echo "--about-min wants a plain number, got: $ABOUT_MIN" >&2; exit 1 ;;
+esac
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "python3 not found — needed to read the opencode database" >&2
@@ -272,6 +279,45 @@ shorten_dir() {
   echo "$p" | awk -F/ '{ n=NF; if (n<=3) print $0; else print $(n-2)"/"$(n-1)"/"$n }'
 }
 
+# The widest DIR as shown, and whether any row carries an ABOUT. Read from the
+# rows in one pass, so DIR can be padded before the first line is printed.
+about_widths() {
+  awk -F'\t' -v d="$1" -v a="$2" -v full="$FULL_PATH" '
+    { p = $d
+      if (full != 1) { n = split(p, s, "/"); if (n > 3) p = s[n-2] "/" s[n-1] "/" s[n] }
+      if (length(p) > w) w = length(p)
+      if ($a != "") any = 1 }
+    END { print w + 0, any + 0 }'
+}
+
+# A long ABOUT wraps at word boundaries, so nothing of it is hidden: the first
+# line takes ROOM characters, each further line starts with PAD and takes REST.
+about_lines() {
+  local text="$1" width="$2" rest="$3" pad="$4" line="" word sep=""
+  local -a words
+  if [ "$width" -le 0 ] || [ "${#text}" -le "$width" ]; then
+    printf '%s' "$text"
+    return
+  fi
+  read -r -a words <<< "$text"
+  for word in "${words[@]}"; do
+    if [ -z "$line" ]; then
+      line=$word
+    elif [ $(( ${#line} + 1 + ${#word} )) -le "$width" ]; then
+      line="$line $word"
+    else
+      printf '%s%s' "$sep" "$line"; sep=$'\n'$pad; width=$rest
+      line=$word
+    fi
+    while [ "${#line}" -gt "$width" ]; do
+      printf '%s%s' "$sep" "${line:0:$width}"; sep=$'\n'$pad; width=$rest
+      line=${line:$width}
+    done
+  done
+  [ -n "$line" ] && printf '%s%s' "$sep" "$line"
+  return 0
+}
+
 # --sum and --sum-orig answer the same question in two languages, so they cache
 # side by side; one file would mean each flag silently discarding the other's
 # work.
@@ -296,7 +342,7 @@ SUM_FILE_SUFFIX=""
 # --sum-gap. The directory cannot change inside an opencode session, so it is
 # not a boundary here.
 sum_digest() {
-  python3 - "$DB" "$1" "$SUM_GAP" <<'PY'
+  python3 - "$DB" "$1" "$SUM_GAP" "${@:2}" <<'PY'
 import json, re, sqlite3, sys, datetime
 
 db, sid, gap_min = sys.argv[1], sys.argv[2], int(sys.argv[3])
@@ -304,9 +350,9 @@ gap = gap_min * 60
 con = sqlite3.connect(db, timeout=10)
 
 row = con.execute("SELECT directory FROM session WHERE id = ?", (sid,)).fetchone()
-if row is None:
+if row is None and sid != '--about':
     sys.exit(4)
-cwd = row[0] or '?'
+cwd = (row or [None])[0] or '?'
 
 # ── redaction ───────────────────────────────────────────────────────────────
 #
@@ -531,6 +577,209 @@ def redact(text):
             carry = max(carry - 1, 0)
         out.append(line)
     return '\n'.join(out)
+
+# ── ABOUT column ────────────────────────────────────────────────────────────
+#
+# One line on where a long session ended, read from its own tool calls. No
+# model is called, so it costs nothing and stays in the language the session
+# was held in. Two signals, both shown: the subject of the last commit says
+# what was finished, the last files edited say what the work was around. A
+# commit subject alone can be too narrow to place a session, and neither
+# needs a repository — a session that never committed shows its files. One
+# that did neither shows its last request.
+#
+# Everything from here to the per-IDE part is the same in all three scripts;
+# only about_events() knows this IDE's format.
+import os, shlex
+
+ABOUT_FILES = 3
+ABOUT_MAX = 200
+# `git` where a command starts: a line, or after && ; | ( — or behind rtk or an
+# env assignment. A commit command quoted inside another one is not a commit.
+GIT_COMMIT = re.compile(r'(?:^|[;&|(])\s*(?:rtk\s+)?(?:\w+=\S*\s+)*'
+                        r'git(?:\s+-[Cc]\s+\S+)*\s+commit\b', re.M)
+CAT_WRITE = re.compile(r'\bcat\s*>\s*([^\s<>|;&]+)\s*<<-?\s*[\'"]?(\w+)[\'"]?[^\n]*\n'
+                       r'(.*?)\n\s*\2\b', re.S)
+
+def first_line(text):
+    for line in (text or '').splitlines():
+        line = line.strip()
+        if line:
+            return line
+    return ''
+
+def tail_lines(path, size=2000000):
+    # The end of a session is all this column reads; a long transcript is
+    # megabytes, and the first line of a cut chunk is a broken record.
+    with open(path, 'rb') as fh:
+        fh.seek(0, 2)
+        end = fh.tell()
+        fh.seek(max(0, end - size))
+        lines = fh.read().decode('utf-8', 'replace').split('\n')
+    return lines[1:] if end > size else lines
+
+def patch_events(text):
+    # apply_patch: an added file carries its text on '+' lines, an updated one
+    # only its name here.
+    out, cur = [], None
+    for line in (text or '').splitlines():
+        if line.startswith('*** Add File: '):
+            cur = ['write', line[14:].strip(), []]
+            out.append(cur)
+        elif line.startswith('*** Update File: '):
+            cur = None
+            out.append(['edit', line[17:].strip(), []])
+        elif line.startswith('***'):
+            cur = None
+        elif cur is not None and line.startswith('+'):
+            cur[2].append(line[1:])
+    return [(k, p, '\n'.join(b)) for k, p, b in out]
+
+def message_file(path, written, used):
+    # `git commit -F FILE`: the message was usually written by the session
+    # itself a moment earlier, so its own record has it even after the file
+    # is gone. The disk is the fallback.
+    for k, v in written.items():
+        if k == path or k.endswith('/' + path):
+            used.add(os.path.basename(k))
+            return v
+    if os.path.isabs(path) and os.path.isfile(path):
+        used.add(os.path.basename(path))
+        try:
+            with open(path, errors='replace') as fh:
+                return fh.read(4096)
+        except OSError:
+            pass
+    return ''
+
+def unquote(s):
+    # shlex leaves the shell's \$ and \` inside double quotes as they were typed.
+    return s.replace('\\$', '$').replace('\\`', '`')
+
+def commit_subject(cmd, written, used):
+    # None: not a commit. '': a commit whose message cannot be recovered.
+    m = GIT_COMMIT.search(cmd or '')
+    if not m:
+        return None
+    rest = cmd[m.end():]
+    head, _, body = rest.partition('\n')
+    if '<<' in head:
+        return first_line(body)
+    try:
+        args = shlex.split(rest)
+    except ValueError:
+        args = rest.split()
+    for i, a in enumerate(args):
+        if a in ('&&', '||', ';', '|'):
+            break
+        nxt = args[i + 1] if i + 1 < len(args) else ''
+        if a in ('-m', '--message'):
+            return unquote(first_line(nxt))
+        if a.startswith('--message='):
+            return unquote(first_line(a[10:]))
+        if a in ('-F', '--file'):
+            return '' if nxt == '-' else first_line(message_file(nxt, written, used))
+        if a.startswith('--file='):
+            return first_line(message_file(a[7:], written, used))
+        if a.startswith('-') and not a.startswith('--') and 'm' in a[1:]:
+            return unquote(first_line(a[a.index('m', 1) + 1:] or nxt))
+    return ''
+
+def about_of(events):
+    # events, oldest first: ('write', path, text) | ('edit', path, '')
+    # | ('cmd', command, '') | ('ask', request, '')
+    written, used, subject = {}, set(), None
+    for kind, a, b in events:
+        if kind == 'write':
+            written[a] = b
+        elif kind == 'cmd':
+            for m in CAT_WRITE.finditer(a):
+                written[m.group(1)] = m.group(3)
+            s = commit_subject(a, written, used)
+            if s is not None:
+                subject = s
+    # A scratch file in /tmp says less than a file of the work itself, so it
+    # is shown only when the session edited nothing else.
+    files, scratch, ask = [], [], ''
+    for kind, a, b in reversed(events):
+        if kind in ('write', 'edit'):
+            name = os.path.basename(a.rstrip('/'))
+            into = scratch if a.startswith(('/tmp/', '/var/tmp/')) else files
+            if name and name not in into and name not in used and len(into) < ABOUT_FILES:
+                into.append(name)
+        elif kind == 'ask' and not ask:
+            ask = first_line(a)
+    files = files or scratch
+    parts = []
+    if subject:
+        parts.append('commit: ' + subject)
+    if files:
+        parts.append('edit ' + ', '.join(files))
+    if not parts and ask:
+        parts.append('asked: ' + ask)
+    line = ' '.join(redact('; '.join(parts)).split())
+    return line if len(line) <= ABOUT_MAX else line[:ABOUT_MAX - 1] + '…'
+
+def about_rows(rows_file, min_turns, turns_col):
+    # Prints every listing row back with one more field. Below the threshold
+    # it is empty; a session that cannot be read gets an empty one too — a
+    # column is not worth a failed listing.
+    with open(rows_file, errors='replace') as fh:
+        rows = [r.rstrip('\n') for r in fh if r.strip()]
+    abouts = []
+    for row in rows:
+        f = row.split('\t')
+        try:
+            long_enough = int(f[turns_col]) >= min_turns
+        except (IndexError, ValueError):
+            long_enough = False
+        try:
+            abouts.append(about_of(about_events(f)) if long_enough else '')
+        except Exception:
+            abouts.append('')
+    # The shared redactor once over every line, as for a summary; the lines
+    # are kept only if it gave back as many as it got.
+    idx = [i for i, a in enumerate(abouts) if a]
+    if idx:
+        masked = scrub('\n'.join(abouts[i] for i in idx)).rstrip('\n').split('\n')
+        if len(masked) == len(idx):
+            for i, a in zip(idx, masked):
+                abouts[i] = a
+    for row, about in zip(rows, abouts):
+        print(row + '\t' + about)
+
+# ── ABOUT: this IDE ─────────────────────────────────────────────────────────
+def about_events(f):
+    rows = con.execute("""
+        SELECT json_extract(m.data, '$.role'), p.data
+        FROM part p JOIN message m ON m.id = p.message_id
+        WHERE p.session_id = ?
+        ORDER BY p.time_created DESC, p.id DESC LIMIT 5000""", (f[0],)).fetchall()
+    events = []
+    for role, data in reversed(rows):
+        try:
+            d = json.loads(data)
+        except (TypeError, ValueError):
+            continue
+        if d.get('type') == 'text' and role == 'user' and not d.get('synthetic'):
+            events.append(('ask', d.get('text') or '', ''))
+        elif d.get('type') == 'tool':
+            inp = (d.get('state') or {}).get('input') or {}
+            tool = d.get('tool')
+            if tool == 'write':
+                events.append(('write', inp.get('filePath') or '', inp.get('content') or ''))
+            elif tool in ('edit', 'multiedit'):
+                events.append(('edit', inp.get('filePath') or '', ''))
+            elif tool == 'bash':
+                events.append(('cmd', inp.get('command') or '', ''))
+            elif tool in ('patch', 'apply_patch'):
+                events.extend(patch_events(inp.get('patchText') or inp.get('input')))
+    return events
+
+# `--about ROWS MIN`: the listing's ABOUT column, then nothing else.
+if sid == '--about':
+    about_rows(sys.argv[4], int(sys.argv[5]), 3)
+    sys.exit(0)
 
 turns = []
 for role, created, data in con.execute("""
@@ -1118,15 +1367,50 @@ if [ -z "$(printf '%s' "$rows" | tr -d '[:space:]')" ]; then
   exit 0
 fi
 
-printf "%-30s %-10s %-6s %-8s %-11s %s\n" "SESSION ID (full)" "LAST" "MSGS" "COST" "DATE" "DIR"
+# ABOUT: one python run over every row, before the table. A failure leaves the
+# table as it was, without the column.
+about_in=$(mktemp)
+printf '%s\n' "$rows" > "$about_in"
+with_about=$(sum_digest --about "$about_in" "$ABOUT_MIN" 2>/dev/null || true)
+rm -f "$about_in"
+[ -n "$with_about" ] && rows=$with_about
+read -r dir_w about_any <<EOF_W
+$(printf '%s\n' "$rows" | about_widths 2 6)
+EOF_W
+# On a terminal ABOUT wraps. With room to spare it continues under its own
+# column; in a narrow window that would be a tall strip of short lines, so it
+# continues on the next line instead, indented, across the whole width.
+room=0; rest=0; about_pad=''
+if [ -t 1 ]; then
+  cols=$(tput cols 2>/dev/null || echo 0)
+  start=$(( 70 + dir_w + 2 ))
+  room=$(( ${cols:-0} - start ))
+  if [ "$room" -ge 50 ]; then
+    rest=$room; about_pad=$(printf '%*s' "$start" '')
+  else
+    rest=$(( ${cols:-0} - 4 )); about_pad='    '
+    [ "$room" -lt 20 ] && room=20
+    [ "$rest" -lt 20 ] && rest=20
+  fi
+fi
 
-while IFS=$'\t' read -r sid directory tupd msgs cost; do
+if [ "$about_any" = 1 ]; then
+  printf "%-30s %-10s %-6s %-8s %-11s %-${dir_w}s  %s\n" "SESSION ID (full)" "LAST" "MSGS" "COST" "DATE" "DIR" "ABOUT"
+else
+  printf "%-30s %-10s %-6s %-8s %-11s %s\n" "SESSION ID (full)" "LAST" "MSGS" "COST" "DATE" "DIR"
+fi
+
+while IFS=$'\t' read -r sid directory tupd msgs cost about; do
   [ -z "$sid" ] && continue
   mtime=$(( tupd / 1000 ))
   age=$(format_age "$mtime")
   date_str=$(date -d "@$mtime" +"%m-%d %H:%M" 2>/dev/null || date -r "$mtime" +"%m-%d %H:%M")
   dir_disp=$(shorten_dir "$directory")
-  printf "%-30s %-10s %-6s \$%-7s %-11s %s\n" "$sid" "$age" "$msgs" "$cost" "$date_str" "$dir_disp"
+  if [ "$about_any" = 1 ]; then
+    printf "%-30s %-10s %-6s \$%-7s %-11s %-${dir_w}s  %s\n" "$sid" "$age" "$msgs" "$cost" "$date_str" "$dir_disp" "$(about_lines "$about" "$room" "$rest" "$about_pad")"
+  else
+    printf "%-30s %-10s %-6s \$%-7s %-11s %s\n" "$sid" "$age" "$msgs" "$cost" "$date_str" "$dir_disp"
+  fi
 done <<< "$rows"
 
 echo

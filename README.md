@@ -99,6 +99,7 @@ claude-sessions -n 20               # limit rows
 claude-sessions k8s                 # filter by directory substring
 claude-sessions -p                  # only this project's sessions
 claude-sessions -f                  # full paths instead of the last 3 parts
+claude-sessions --about-min 100     # ABOUT for sessions of 100 turns or more
 
 claude-sessions --rm <ID>                    # confirms, then deletes
 claude-sessions --older-than 30              # lists; deletes nothing yet
@@ -126,6 +127,31 @@ Deleting moves files to `~/.cache/ide-sessions-trash/<ide>-<timestamp>/`, so a
 mistake is recoverable. Naming an id is intent enough to delete after a
 confirmation; bulk criteria can sweep up far more than expected, so they stay a
 dry run until `--apply`. The live session is never deleted.
+
+What a long session was about:
+
+```
+$ claude-sessions -p
+    SESSION ID (full)                    LAST       TURNS  DATE        DIR         ABOUT
+*   bdc2f598-3b6a-4e6f-a648-10ba0f1d4360 14s ago    2108   09-11 09:59 /srv/infra  commit: backup: keep seven daily snapshots; edit backup.sh, README.md
+```
+
+A session of 500 turns or more gets an ABOUT line: the subject of its last
+commit and the last three files it edited. Both come from the session's own
+tool calls. The commit says what was finished; the files say what the work was
+around. No model is called, so the line costs nothing and keeps the language of
+the session. No repository is needed either. A session without a commit shows
+only its files. A session that neither committed nor edited shows its last
+request. Files in `/tmp` appear only when the session edited nothing else. The
+line is masked like the digest of `--sum` — see [Credentials](#credentials).
+
+`--about-min N` moves the threshold; in opencode it counts messages (`MSGS`).
+Below the threshold the column stays empty, and when no session reaches it, the
+column is not printed. On a terminal, a long ABOUT wraps. When the window
+leaves the column 50 characters, the text continues under it. Otherwise it
+continues on the next line, indented, across the whole width. In a pipe it stays
+on one line. Each long session adds about 50 ms: the column reads the last 2 MB
+of its transcript.
 
 Summaries:
 
@@ -587,7 +613,7 @@ summarized with claude-haiku-4-5-20251001
 |---|---|---|
 | `IDE_SESSIONS_SUM_MODEL` | unset | model for `--sum` |
 | `IDE_SESSIONS_SUM_CACHE` | `~/.cache/ide-sessions-summaries` | cached summaries |
-| `IDE_SESSIONS_REDACTOR` | `secrets-redact` on `PATH` | the redactor the digest goes through; empty — the built-in patterns only |
+| `IDE_SESSIONS_REDACTOR` | `secrets-redact` on `PATH` | the redactor the digest and the ABOUT column go through; empty — the built-in patterns only |
 | `IDE_SESSIONS_TRASH` | `~/.cache/ide-sessions-trash` | where deletes go |
 | `IDE_SESSIONS_MODELS_JSON` | unset | a models.dev catalogue to price against |
 | `IDE_SESSIONS_BIN_DIR` | `~/.local/bin` | where `install.sh` writes |

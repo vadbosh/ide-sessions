@@ -1285,6 +1285,147 @@ contains "ide-history: two questions at once are refused"   "$out" "give one"
 if "$ROOT/bin/ide-history" --help >/dev/null 2>&1; then ok "ide-history: --help exits 0"
 else nope "ide-history: --help exits 0"; fi
 
+# ── ABOUT column ────────────────────────────────────────────────────────────
+# One line per long session, from its own tool calls: the last commit subject
+# and the last files edited, or the last request when it did neither. No
+# repository is involved — every case below runs outside git.
+echo "ABOUT column"
+
+AB="$TMP/about"
+mkdir -p "$AB/claude/projects/-work-a" "$AB/codex/sessions/2026/03/04" "$AB/opencode"
+AKEY="AKIA$(printf 'Q%.0s' $(seq 16))"
+python3 - "$AB" "$AKEY" <<'PY'
+import json, sqlite3, sys
+ab, akey = sys.argv[1], sys.argv[2]
+
+def user(text, **kw):
+    return dict({"type": "user", "cwd": "/work/a",
+                 "timestamp": "2026-03-04T10:00:00.000Z",
+                 "message": {"content": [{"type": "text", "text": text}]}}, **kw)
+
+def tool(name, **inp):
+    return {"type": "assistant", "cwd": "/work/a",
+            "timestamp": "2026-03-04T10:01:00.000Z",
+            "message": {"content": [{"type": "tool_use", "name": name, "input": inp}]}}
+
+def write(path, rows):
+    with open(path, 'w') as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + "\n")
+
+P = ab + "/claude/projects/-work-a/"
+# The message comes from a file the session wrote and then committed with -F;
+# that file is a message, not work, and a /tmp scratch file gives way to a
+# file of the work itself.
+write(P + "aaaaaaaa-0000-0000-0000-000000000001.jsonl", [
+    user("build the parser"),
+    tool("Write", file_path="/tmp/msg.txt", content="feat: parser reads TOML\n\nbody"),
+    tool("Edit", file_path="/work/a/src/parser.py"),
+    tool("Bash", command="git -C /work/a commit -F /tmp/msg.txt"),
+    tool("Edit", file_path="/work/a/README.md"),
+    tool("Write", file_path="/tmp/scratch.py", content="x"),
+])
+write(P + "aaaaaaaa-0000-0000-0000-000000000002.jsonl", [
+    user("почини логи"), user("<task-notification>done</task-notification>"),
+    user("[Request interrupted by user]"), tool("Bash", command="ls"),
+    tool("Bash", command='echo "git commit -m quoted"'),
+])
+write(P + "aaaaaaaa-0000-0000-0000-000000000003.jsonl", [
+    user("x"), tool("Bash", command="ls"),
+    tool("Bash", command="git commit -F - <<'EOF'\nheredoc subject\n\nbody\nEOF"),
+])
+write(P + "aaaaaaaa-0000-0000-0000-000000000005.jsonl", [
+    user("x"), tool("Bash", command="ls"),
+    tool("Bash", command="git commit -m \"rotate %s now\"" % akey),
+])
+write(P + "aaaaaaaa-0000-0000-0000-000000000004.jsonl", [user("short one")])
+
+write(ab + "/codex/sessions/2026/03/04/rollout-2026-03-04T09-00-00-01a00000-0000-7000-8000-0000000000ab.jsonl", [
+    {"timestamp": "2026-03-04T09:00:00.000Z", "type": "session_meta",
+     "payload": {"session_id": "01a00000-0000-7000-8000-0000000000ab", "cwd": "/srv/b"}},
+    {"timestamp": "2026-03-04T09:00:01.000Z", "type": "response_item",
+     "payload": {"type": "custom_tool_call", "name": "apply_patch",
+                 "input": "*** Begin Patch\n*** Update File: /srv/b/main.go\n@@\n-a\n+b\n*** End Patch\n"}},
+    {"timestamp": "2026-03-04T09:00:02.000Z", "type": "response_item",
+     "payload": {"type": "function_call", "name": "exec_command",
+                 "arguments": json.dumps({"cmd": "git commit -am 'codex: wire the handler'"})}},
+])
+
+con = sqlite3.connect(ab + "/opencode/opencode.db")
+con.executescript("""
+CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT,
+    directory TEXT, title TEXT, cost REAL DEFAULT 0,
+    time_created INTEGER, time_updated INTEGER);
+CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT,
+    time_created INTEGER, time_updated INTEGER, data TEXT);
+CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+    time_created INTEGER, time_updated INTEGER, data TEXT);
+""")
+sid, base = "ses_about000000000000000000001", 1772445600000
+con.execute("INSERT INTO session VALUES (?,?,?,?,?,?,?,?)",
+            (sid, 'prj', None, '/opt/c', 't', 0, base, base + 5000))
+parts = [('m1', 'user', {'type': 'text', 'text': 'make the index page'}),
+         ('m2', 'assistant', {'type': 'tool', 'tool': 'write',
+                              'state': {'input': {'filePath': '/opt/c/index.html', 'content': 'x'}}}),
+         ('m3', 'assistant', {'type': 'tool', 'tool': 'bash',
+                              'state': {'input': {'command': 'git commit -m "opencode: index page"'}}})]
+for i, (mid, role, p) in enumerate(parts):
+    con.execute("INSERT INTO message VALUES (?,?,?,?,?)",
+                (mid, sid, base + i, base + i, json.dumps({'role': role})))
+    con.execute("INSERT INTO part VALUES (?,?,?,?,?,?)",
+                (mid + '_p', mid, sid, base + i, base + i, json.dumps(p)))
+con.commit()
+PY
+
+ab_cl() { CLAUDE_CONFIG_DIR="$AB/claude" IDE_SESSIONS_REDACTOR='' "$ROOT/bin/claude-sessions" "$@" 2>&1; }
+out="$(ab_cl --about-min 3)"
+contains "ABOUT: the column is there"                         "$out" "ABOUT"
+contains "ABOUT: -F takes the subject the session wrote"      "$out" "commit: feat: parser reads TOML; edit README.md, parser.py"
+absent   "ABOUT: the message file is not listed as work"      "$out" "msg.txt"
+absent   "ABOUT: a /tmp scratch file gives way to real files" "$out" "scratch.py"
+contains "ABOUT: no commit, no edit = the last request"       "$out" "asked: почини логи"
+absent   "ABOUT: a task notification is not a request"        "$out" "asked: <task-notification>"
+absent   "ABOUT: a commit quoted inside a command is not one" "$out" "commit: quoted"
+contains "ABOUT: a heredoc message gives its first line"      "$out" "commit: heredoc subject"
+absent   "ABOUT: the commit subject is masked"                "$out" "$AKEY"
+contains "ABOUT: the masked subject is still shown"         "$out" "commit: rotate <REDACTED:20> now"
+absent   "ABOUT: a session under the threshold has none"      "$out" "short one"
+out="$(ab_cl --about-min 999)"
+absent   "ABOUT: no column when no session reaches it"        "$out" "ABOUT"
+out="$(ab_cl --about-min abc)"; rc=$?
+contains "ABOUT: --about-min wants a number"                  "$out" "--about-min wants a plain number"
+if [ "$rc" -ne 0 ]; then ok "ABOUT: a bad --about-min exits non-zero"
+else nope "ABOUT: a bad --about-min exits non-zero"; fi
+printf '#!/bin/sh\nsed "s/parser reads/parser [shared] reads/"\n' > "$FAKE/about-marks"
+chmod +x "$FAKE/about-marks"
+out="$(CLAUDE_CONFIG_DIR="$AB/claude" IDE_SESSIONS_REDACTOR="$FAKE/about-marks" "$ROOT/bin/claude-sessions" --about-min 3 2>&1)"
+contains "ABOUT: the shared redactor sees the column"         "$out" "parser [shared] reads"
+out="$(CLAUDE_CONFIG_DIR="$AB/claude" IDE_SESSIONS_REDACTOR="$FAKE/broken" "$ROOT/bin/claude-sessions" --about-min 3 2>&1)"
+contains "ABOUT: a failed redactor leaves the built-in mask"  "$out" "commit: feat: parser reads TOML"
+
+out="$(CODEX_HOME="$AB/codex" IDE_SESSIONS_REDACTOR='' "$ROOT/bin/codex-sessions" --about-min 3 2>&1)"
+contains "ABOUT: codex reads apply_patch and exec_command"    "$out" "commit: codex: wire the handler; edit main.go"
+out="$(OPENCODE_DATA_DIR="$AB/opencode" IDE_SESSIONS_REDACTOR='' "$ROOT/bin/opencode-sessions" --about-min 3 2>&1)"
+contains "ABOUT: opencode reads its tool parts"               "$out" "commit: opencode: index page; edit index.html"
+
+# On a terminal a long ABOUT wraps rather than being cut. A narrow window has no
+# room under the column, so the rest goes to the next line, indented.
+if command -v script >/dev/null 2>&1; then
+    out="$(CLAUDE_CONFIG_DIR="$AB/claude" IDE_SESSIONS_REDACTOR='' \
+        script -qc "stty cols 100; '$ROOT/bin/claude-sessions' --about-min 3" /dev/null 2>&1 | tr -d '\r')"
+    contains "ABOUT: a terminal gets the rest on the next line" "$out" $'\n    reads TOML; edit README.md, parser.py'
+    absent   "ABOUT: nothing is cut off"                         "$out" "…"
+fi
+
+# The part every IDE shares is copied, not imported; a test keeps the copies equal.
+ab_block() { sed -n '/^# ── ABOUT column/,/^# ── ABOUT: this IDE/p' "$ROOT/bin/$1-sessions"; }
+if [ -n "$(ab_block claude)" ] && [ "$(ab_block claude)" = "$(ab_block codex)" ] \
+   && [ "$(ab_block claude)" = "$(ab_block opencode)" ]; then
+    ok "ABOUT: the three copies of the shared part are identical"
+else
+    nope "ABOUT: the three copies of the shared part are identical"
+fi
+
 # ── install.sh ──────────────────────────────────────────────────────────────
 # Into a throwaway HOME with all three assistants present. The variables the
 # installer reads to find them are cleared, so a value set in the caller's
