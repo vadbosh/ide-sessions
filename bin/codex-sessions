@@ -1075,33 +1075,74 @@ if [ ! -d "$SESSIONS_DIR" ]; then
 fi
 
 tmpfile=$(mktemp)
-trap 'rm -f "$tmpfile"' EXIT
+agents_file=$(mktemp)
+trap 'rm -f "$tmpfile" "$agents_file"' EXIT
 
-find "$SESSIONS_DIR" -name "rollout-*.jsonl" -print0 2>/dev/null | while IFS= read -r -d '' f; do
-  mtime=$(stat -c %Y "$f" 2>/dev/null || echo 0)
-  [ "$mtime" = 0 ] && continue
-  meta=$( (head -1 "$f" || true) 2>/dev/null)
-  sid=$(printf '%s' "$meta" | python3 -c '
-import json,sys
-try:
-    d=json.loads(sys.stdin.read())
-    print(d.get("payload",{}).get("session_id",""))
-except Exception:
-    print("")
-' 2>/dev/null || true)
-  cwd=$(printf '%s' "$meta" | python3 -c '
-import json,sys
-try:
-    d=json.loads(sys.stdin.read())
-    print(d.get("payload",{}).get("cwd",""))
-except Exception:
-    print("")
-' 2>/dev/null || true)
-  [ -z "$sid" ] && continue
-  [ -z "$cwd" ] && cwd="(unknown)"
-  turns=$(wc -l < "$f" 2>/dev/null | tr -d ' ')
-  printf '%s\t%s\t%s\t%s\t%s\n' "$mtime" "$sid" "$cwd" "$turns" "$f" >> "$tmpfile"
-done
+# One pass over every rollout. In the multi-agent mode each subagent writes a
+# rollout of its own, and its session_meta carries the parent's id in
+# session_id; read as the row id, that listed every subagent as one more row
+# under the parent's id. A session is one row instead: its subagents, nested
+# ones included, are folded into it and counted, and $agents_file names their
+# rollouts so that deleting the session takes them too. A subagent whose
+# parent rollout is gone keeps a row of its own, under its own id.
+#
+# Row: mtime, id, cwd, turns, rollout, subagent count.
+python3 - "$SESSIONS_DIR" "$tmpfile" "$agents_file" <<'PY'
+import json, os, sys
+
+root, rows_out, agents_out = sys.argv[1:4]
+found = []
+for dirpath, _, names in os.walk(root):
+    for name in names:
+        if not (name.startswith('rollout-') and name.endswith('.jsonl')):
+            continue
+        f = os.path.join(dirpath, name)
+        try:
+            mtime = int(os.stat(f).st_mtime)
+            with open(f, 'rb') as fh:
+                first = fh.readline()
+                turns = first.count(b'\n') + sum(
+                    chunk.count(b'\n') for chunk in iter(lambda: fh.read(1 << 20), b''))
+            p = json.loads(first).get('payload') or {}
+        except (OSError, ValueError, AttributeError):
+            continue
+        if not isinstance(p, dict):
+            continue
+        sid = p.get('id') or p.get('session_id') or ''
+        if not sid:
+            continue
+        src, spawn = p.get('source'), {}
+        if isinstance(src, dict) and isinstance(src.get('subagent'), dict):
+            spawn = src['subagent'].get('thread_spawn') or {}
+        parent = p.get('parent_thread_id') or spawn.get('parent_thread_id') or ''
+        if not parent and p.get('thread_source') == 'subagent':
+            parent = p.get('session_id') or ''
+        if parent == sid:
+            parent = ''
+        found.append((mtime, sid, p.get('cwd') or '(unknown)', turns, f, parent))
+
+parent_of = {r[1]: r[5] for r in found}
+top = {r[1] for r in found if not r[5]}
+
+def root_of(sid):
+    seen = set()
+    while parent_of.get(sid) and sid not in seen:
+        seen.add(sid)
+        sid = parent_of[sid]
+    return sid
+
+agents = {}
+with open(agents_out, 'w') as a:
+    for r in found:
+        if r[5] and root_of(r[1]) in top:
+            agents[root_of(r[1])] = agents.get(root_of(r[1]), 0) + 1
+            a.write('%s\t%s\n' % (root_of(r[1]), r[4]))
+with open(rows_out, 'w') as o:
+    for mtime, sid, cwd, turns, f, parent in found:
+        if parent and root_of(sid) in top:
+            continue
+        o.write('%d\t%s\t%s\t%d\t%s\t%d\n' % (mtime, sid, cwd, turns, f, agents.get(sid, 0)))
+PY
 
 now=$(date +%s)
 
@@ -1193,22 +1234,30 @@ if [ "$DELETE_MODE" = 1 ]; then
   fi
 
   paths_file=$(mktemp)
-  trap 'rm -f "$tmpfile" "$paths_file"' EXIT
+  trap 'rm -f "$tmpfile" "$agents_file" "$paths_file"' EXIT
 
   echo "Sessions selected for deletion:"
   echo
   printf "%-38s %-10s %-6s %-11s %s\n" "SESSION ID" "LAST" "TURNS" "DATE" "DIR"
   count=0
-  while IFS=$'\t' read -r mtime sid cwd turns fpath; do
+  while IFS=$'\t' read -r mtime sid cwd turns fpath agents; do
     [ -z "$sid" ] && continue
     count=$(( count + 1 ))
     date_str=$(date -d "@$mtime" +"%m-%d %H:%M" 2>/dev/null || date -r "$mtime" +"%m-%d %H:%M")
-    printf "%-38s %-10s %-6s %-11s %s\n" \
-      "$sid" "$(format_age "$mtime")" "$turns" "$date_str" "$(shorten_dir "$cwd")"
+    note=""
+    if [ "${agents:-0}" -gt 0 ]; then note="  +$agents agents"; fi
+    printf "%-38s %-10s %-6s %-11s %s%s\n" \
+      "$sid" "$(format_age "$mtime")" "$turns" "$date_str" "$(shorten_dir "$cwd")" "$note"
     # A cached summary outlives the session it describes unless it goes too.
     for path in "$fpath" "$SUM_CACHE/codex-$sid.md" "$SUM_CACHE/codex-$sid.orig.md"; do
       if [ -e "$path" ]; then printf '%s\n' "$path" >> "$paths_file"; fi
     done
+    # So do the rollouts of its subagents.
+    if [ "${agents:-0}" -gt 0 ]; then
+      while IFS= read -r path; do
+        if [ -e "$path" ]; then printf '%s\n' "$path" >> "$paths_file"; fi
+      done < <(awk -F'\t' -v s="$sid" '$1 == s { print $2 }' "$agents_file")
+    fi
   done <<< "$candidates"
 
   npaths=$(wc -l < "$paths_file" | tr -d ' ')
@@ -1289,8 +1338,12 @@ with_about=$(sum_digest --about "$about_in" "$ABOUT_MIN" 2>/dev/null || true)
 rm -f "$about_in"
 [ -n "$with_about" ] && rows=$with_about
 read -r dir_w about_any <<EOF_W
-$(printf '%s\n' "$rows" | about_widths 3 6)
+$(printf '%s\n' "$rows" | about_widths 3 7)
 EOF_W
+# The subagent count is shown in the same column, so it needs it too.
+if [ "$about_any" != 1 ] && printf '%s\n' "$rows" | awk -F'\t' '$6 > 0 { f = 1 } END { exit !f }'; then
+  about_any=1
+fi
 # On a terminal ABOUT wraps. With room to spare it continues under its own
 # column; in a narrow window that would be a tall strip of short lines, so it
 # continues on the next line instead, indented, across the whole width.
@@ -1314,8 +1367,9 @@ else
   printf "%-38s %-10s %-6s %-11s %s\n" "SESSION ID (full)" "LAST" "TURNS" "DATE" "DIR"
 fi
 
-while IFS=$'\t' read -r mtime sid cwd turns fpath about; do
+while IFS=$'\t' read -r mtime sid cwd turns fpath agents about; do
   [ -z "$sid" ] && continue
+  if [ "${agents:-0}" -gt 0 ]; then about="+$agents agents${about:+; $about}"; fi
   age=$(format_age "$mtime")
   date_str=$(date -d "@$mtime" +"%m-%d %H:%M" 2>/dev/null || date -r "$mtime" +"%m-%d %H:%M")
   dir_disp=$(shorten_dir "$cwd")

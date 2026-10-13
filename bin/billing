@@ -269,18 +269,111 @@ if [ "$mode" = "block" ]; then
 fi
 
 
+# Codex subagents. Each writes a rollout whose session_meta names the thread
+# that spawned it (parent_thread_id); a subagent of a subagent names another
+# subagent, so the chain is followed to its root. codex_fold MATCHES ALL
+# prints MATCHES with every subagent whose session is also a match removed, and
+# with each Codex session's own cost summed with its subagents'.
+codex_fold() {
+  local m_file a_file rc=0
+  m_file=$(mktemp); a_file=$(mktemp)
+  printf '%s' "$1" > "$m_file"; printf '%s' "${2:-{\}}" > "$a_file"
+  python3 - "$m_file" "$a_file" "${CODEX_HOME:-$HOME/.codex}/sessions" <<'PY' || rc=$?
+import json, os, re, sys
+
+matches = json.load(open(sys.argv[1]))
+everything = json.load(open(sys.argv[2])).get('session') or []
+UUID = re.compile(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$')
+
+parent_of = {}
+for dirpath, _, names in os.walk(sys.argv[3]):
+    for name in names:
+        if not (name.startswith('rollout-') and name.endswith('.jsonl')):
+            continue
+        try:
+            with open(os.path.join(dirpath, name), 'rb') as fh:
+                p = json.loads(fh.readline()).get('payload') or {}
+        except (OSError, ValueError, AttributeError):
+            continue
+        if not isinstance(p, dict) or not p.get('id'):
+            continue
+        src, spawn = p.get('source'), {}
+        if isinstance(src, dict) and isinstance(src.get('subagent'), dict):
+            spawn = src['subagent'].get('thread_spawn') or {}
+        parent = p.get('parent_thread_id') or spawn.get('parent_thread_id') or ''
+        if not parent and p.get('thread_source') == 'subagent':
+            parent = p.get('session_id') or ''
+        if parent and parent != p['id']:
+            parent_of[p['id']] = parent
+
+def root_of(u):
+    seen = set()
+    while parent_of.get(u) and u not in seen:
+        seen.add(u)
+        u = parent_of[u]
+    return u
+
+def uuid(rec):
+    m = UUID.search(rec.get('period') or '')
+    return m.group(1) if m else rec.get('period') or ''
+
+shown = {m.get('shown') for m in matches}
+out = [m for m in matches
+       if not (m.get('agent') == 'codex' and m.get('shown') in parent_of
+               and root_of(m['shown']) in shown)]
+
+TOKENS = ('inputTokens', 'outputTokens', 'cacheCreationTokens', 'cacheReadTokens', 'totalTokens')
+for m in out:
+    if m.get('agent') != 'codex' or m.get('shown') in parent_of:
+        continue
+    kids = [r for r in everything if r.get('agent') == 'codex' and uuid(r) != m['shown']
+            and uuid(r) in parent_of and root_of(uuid(r)) == m['shown']]
+    if not kids:
+        continue
+    by_model = {b.get('modelName'): dict(b) for b in m.get('modelBreakdowns') or []}
+    for k in kids:
+        for f in TOKENS + ('totalCost',):
+            m[f] = (m.get(f) or 0) + (k.get(f) or 0)
+        meta, kmeta = m.setdefault('metadata', {}), k.get('metadata') or {}
+        if kmeta.get('reasoningOutputTokens'):
+            meta['reasoningOutputTokens'] = (meta.get('reasoningOutputTokens') or 0) + kmeta['reasoningOutputTokens']
+        if (kmeta.get('lastActivity') or '') > (meta.get('lastActivity') or ''):
+            meta['lastActivity'] = kmeta['lastActivity']
+        for b in k.get('modelBreakdowns') or []:
+            t = by_model.setdefault(b.get('modelName'), {'modelName': b.get('modelName')})
+            for f in ('inputTokens', 'outputTokens', 'cacheCreationTokens', 'cacheReadTokens', 'cost'):
+                t[f] = (t.get(f) or 0) + (b.get(f) or 0)
+        for name in k.get('modelsUsed') or []:
+            if name not in (m.get('modelsUsed') or []):
+                m.setdefault('modelsUsed', []).append(name)
+    m['modelBreakdowns'] = list(by_model.values())
+    m['subagents'] = {'count': len(kids), 'totalCost': sum(k.get('totalCost') or 0 for k in kids)}
+print(json.dumps(out))
+PY
+  rm -f "$m_file" "$a_file"
+  return "$rc"
+}
+
 # ── one session ──────────────────────────────────────────────────────────────
 
 if [ "$mode" = "session" ]; then
   # ccusage names a Codex session by its transcript path,
   # 2026/09/18/rollout-<time>-<uuid>; codex-sessions shows only the uuid, so
   # both are matched. Claude and opencode ids are the ids themselves.
-  matches=$("$CCUSAGE_BIN" session --json 2>/dev/null | jq -c --arg id "$sid" --arg ide "$ide" '
+  sessions_json=$("$CCUSAGE_BIN" session --json 2>/dev/null || true)
+  matches=$(jq -c --arg id "$sid" --arg ide "$ide" '
     def uuid: (.period | capture("(?<u>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$").u) // .period;
     [ (.session // [])[]
       | select($ide == "" or .agent == $ide)
       | . + {shown: uuid}
-      | select((.shown | startswith($id)) or (.period | startswith($id))) ]')
+      | select((.shown | startswith($id)) or (.period | startswith($id))) ]' <<<"${sessions_json:-{\}}")
+  # A Codex subagent writes a rollout of its own, and ccusage counts each
+  # rollout as a session. Its cost belongs to the session that spawned it, the
+  # one codex-sessions shows: fold it in, and do not offer it as a second
+  # match beside its own session.
+  if jq -e 'any(.[]; .agent == "codex")' <<<"$matches" >/dev/null 2>&1; then
+    matches=$(codex_fold "$matches" "$sessions_json") || die "could not read the Codex rollouts"
+  fi
   count=$(jq 'length' <<<"$matches")
 
   if [ "$count" = 0 ]; then
@@ -321,6 +414,9 @@ if [ "$mode" = "session" ]; then
     "K\tModels\t\((.modelsUsed // []) | join(", "))\tstr",
     (if $started != "" then "K\tStarted\t\($started)\tstr" else empty end),
     "K\tLast activity\t\(.metadata.lastActivity // "?")\tstr",
+    (if .subagents then
+       ((.subagents.totalCost * 100 | round) as $c | ($c % 100) as $r
+       | "K\tSubagents\t\(.subagents.count), $\($c / 100 | floor).\(if $r < 10 then "0" else "" end)\($r) — included below\tstr") else empty end),
     (if .metadata.reasoningOutputTokens then
        "K\tReasoning\t\(.metadata.reasoningOutputTokens) output tokens\tint" else empty end),
     # One table: a row per model, then the session total. Per-model TOTAL is

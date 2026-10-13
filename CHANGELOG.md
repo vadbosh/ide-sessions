@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.14.1
+
+- **`codex-sessions` listed every subagent as another row of its session.** In
+  the multi-agent mode each subagent writes a rollout of its own, and its
+  `session_meta` carries the parent's id in `session_id`. The script read that
+  field as the row id, so one session with nine subagents took ten rows under
+  one id. Now the row id is the rollout's own id, and the subagents, nested
+  ones included, are folded into their session: one row, `+N agents` in the
+  ABOUT column, and `--rm` of the session moves their rollouts too. A subagent
+  whose session rollout is gone keeps a row under its own id. The rollouts are
+  read in one python pass instead of two python runs per file.
+- **`billing --id` left the subagents out of a Codex session's cost.** ccusage
+  counts each rollout as a session, so the session showed only its own share:
+  $12.27 of $23.78 on a session with nine subagents. Their rollouts are now
+  added to the session that spawned them, with a `Subagents:` line giving their
+  number and cost, and a prefix no longer offers a subagent as a second match
+  beside its own session.
+
 ## 0.14.0
 
 - **The listing has an ABOUT column for long sessions.** For a session of 500

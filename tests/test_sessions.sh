@@ -909,9 +909,22 @@ cat > "$STUB/session.json" <<'JSON'
    "totalTokens": 1000, "totalCost": 0.25, "modelsUsed": ["gpt-5.6-sol"],
    "metadata": {"lastActivity": "2026-03-02T13:05:00Z", "reasoningOutputTokens": 20},
    "modelBreakdowns": [{"modelName": "gpt-5.6-sol", "inputTokens": 500, "outputTokens": 50,
-     "cacheCreationTokens": 0, "cacheReadTokens": 450, "cost": 0.25}]}
+     "cacheCreationTokens": 0, "cacheReadTokens": 450, "cost": 0.25}]},
+  {"agent": "codex",
+   "period": "2026/03/02/rollout-2026-03-02T13-01-00-01a00000-0000-7000-8000-000000000008",
+   "inputTokens": 100, "outputTokens": 10, "cacheCreationTokens": 0, "cacheReadTokens": 90,
+   "totalTokens": 200, "totalCost": 0.5, "modelsUsed": ["gpt-5.6-sol"],
+   "metadata": {"lastActivity": "2026-03-02T13:06:00Z"},
+   "modelBreakdowns": [{"modelName": "gpt-5.6-sol", "inputTokens": 100, "outputTokens": 10,
+     "cacheCreationTokens": 0, "cacheReadTokens": 90, "cost": 0.5}]}
 ]}
 JSON
+
+# ...0008 is a subagent of ...0007: ccusage counts its rollout as a session of
+# its own, but its cost belongs to the session that spawned it.
+CXS="$CODEX_HOME/sessions/2026/03/02/rollout-2026-03-02T13-01-00-01a00000-0000-7000-8000-000000000008.jsonl"
+mkdir -p "$(dirname "$CXS")"
+printf '%s\n' '{"timestamp":"2026-03-02T13:01:00.000Z","type":"session_meta","payload":{"id":"01a00000-0000-7000-8000-000000000008","session_id":"01a00000-0000-7000-8000-000000000007","thread_source":"subagent","source":{"subagent":{"thread_spawn":{"parent_thread_id":"01a00000-0000-7000-8000-000000000007","depth":1}}}}}' > "$CXS"
 
 bill() { CCUSAGE_BIN="$STUB/ccusage" "$ROOT/bin/billing" "$@" 2>&1; }
 
@@ -971,6 +984,10 @@ contains "billing --id: cost to the cent"      "$out" '$12.35'
 out="$(bill --id 01a00000-0000-7000)"
 contains "billing --id: a codex uuid finds its transcript path" "$out" "Transcript:    2026/03/02/rollout"
 contains "billing --id: codex reasoning tokens" "$out" "Reasoning:     20 output tokens"
+contains "billing --id: a codex session counts its subagents" "$out" 'Subagents:     1, $0.50 — included below'
+contains "billing --id: their cost is in the total"         "$out" '$0.75'
+out="$(bill --id 01a00000-0000-7000-8000-00000000000)"
+absent   "billing --id: a subagent is not a second match"   "$out" "matches 2 sessions"
 
 out="$(bill --id aa000000; echo "EXIT=$?")"
 contains "billing --id: an ambiguous prefix lists the candidates" "$out" "matches 2 sessions"
@@ -1284,6 +1301,49 @@ out="$(ih --id x --grep y)"
 contains "ide-history: two questions at once are refused"   "$out" "give one"
 if "$ROOT/bin/ide-history" --help >/dev/null 2>&1; then ok "ide-history: --help exits 0"
 else nope "ide-history: --help exits 0"; fi
+
+# ── codex subagents ─────────────────────────────────────────────────────────
+# A subagent writes a rollout of its own whose session_meta carries the
+# parent's id in session_id. Read naively, each one was another row under the
+# parent's id. Now a session is one row, its subagents counted on it.
+echo "codex subagents"
+
+SA="$TMP/subagents/sessions/2026/03/05"
+mkdir -p "$SA"
+python3 - "$SA" <<'PY'
+import json, sys
+d = sys.argv[1]
+P = "01a00000-0000-7000-8000-00000000a000"
+def rollout(tid, meta, n=3):
+    with open("%s/rollout-2026-03-05T10-00-00-%s.jsonl" % (d, tid), "w") as fh:
+        fh.write(json.dumps({"timestamp": "2026-03-05T10:00:00.000Z", "type": "session_meta",
+                             "payload": dict({"id": tid, "cwd": "/srv/sa"}, **meta)}) + "\n")
+        for i in range(n):
+            fh.write(json.dumps({"timestamp": "2026-03-05T10:00:01.000Z", "type": "event_msg",
+                                 "payload": {"type": "agent_message", "message": "m%d" % i}}) + "\n")
+def spawn(parent):
+    return {"subagent": {"thread_spawn": {"parent_thread_id": parent, "depth": 1}}}
+rollout(P, {"session_id": P, "source": "cli"})
+rollout("01a00000-0000-7000-8000-00000000a001",
+        {"session_id": P, "thread_source": "subagent", "source": spawn(P)})
+# nested: a subagent of a subagent belongs to the same session
+rollout("01a00000-0000-7000-8000-00000000a002",
+        {"session_id": P, "thread_source": "subagent",
+         "source": spawn("01a00000-0000-7000-8000-00000000a001")})
+# its parent rollout is gone: it stays visible, under its own id
+rollout("01a00000-0000-7000-8000-00000000b001",
+        {"session_id": "01a00000-0000-7000-8000-00000000b000", "thread_source": "subagent",
+         "source": spawn("01a00000-0000-7000-8000-00000000b000")})
+PY
+sa() { CODEX_HOME="$TMP/subagents" "$ROOT/bin/codex-sessions" "$@" 2>&1; }
+out="$(sa)"
+n=$(printf '%s\n' "$out" | grep -c '^01a00000-0000-7000-8000-00000000a000 ')
+if [ "$n" = 1 ]; then ok "subagents: the session is one row"; else nope "subagents: the session is one row" "$n rows"; fi
+contains "subagents: the row counts them, nested ones too"   "$out" "+2 agents"
+absent   "subagents: a subagent has no row of its own"        "$out" "00000000a001"
+contains "subagents: an orphan keeps a row under its own id" "$out" "01a00000-0000-7000-8000-00000000b001"
+out="$(sa --rm 01a00000-0000-7000-8000-00000000a000 --dry-run)"
+contains "subagents: deleting the session takes their rollouts" "$out" "1 session(s), 3 file(s)"
 
 # ── ABOUT column ────────────────────────────────────────────────────────────
 # One line per long session, from its own tool calls: the last commit subject

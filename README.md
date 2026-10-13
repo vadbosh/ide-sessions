@@ -278,6 +278,11 @@ end, so the id from `codex-sessions` works as is. The form is the same for every
 IDE: the IDE is found from the id. A prefix that fits several sessions lists
 them instead of guessing; `--ide` narrows it.
 
+ccusage also counts the rollout of each Codex subagent as a session of its own.
+`billing --id` adds those rollouts to the session that spawned them, as
+`codex-sessions` folds them into its row. A `Subagents:` line gives their
+number and their share of the cost, and the table includes them.
+
 ```
 $ billing --id bdc2f598
 Cost of one session · Claude Code
@@ -633,6 +638,13 @@ from has none.
 A session is more than its transcript: subagent logs, file history, session
 env, usage data and security state are all keyed by the same id, and `--rm`
 moves the whole footprint to the trash.
+
+**Codex** — one rollout per session under `~/.codex/sessions/YYYY/MM/DD/`. In
+the multi-agent mode each subagent writes a rollout of its own, and its
+`session_meta` carries the id of the parent session. The subagents are folded
+into their session: it stays one row, with `+N agents` in the ABOUT column, and
+`--rm` moves their rollouts too. A subagent whose session rollout is gone is
+listed under its own id.
 
 ### Why an old session is missing
 
