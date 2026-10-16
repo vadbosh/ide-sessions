@@ -1506,9 +1506,9 @@ echo "--search"
 SR="$TMP/search"
 mkdir -p "$SR/claude/projects/-work-s/cccccccc-0000-0000-0000-000000000001/subagents" \
          "$SR/codex/sessions/2026/03/05"
-python3 - "$SR" <<'PY'
+python3 - "$SR" "$AKEY" <<'PY'
 import json, sys
-sr = sys.argv[1]
+sr, akey = sys.argv[1], sys.argv[2]
 
 def write(path, rows):
     with open(path, 'w') as fh:
@@ -1541,6 +1541,9 @@ write(P + "cccccccc-0000-0000-0000-000000000002.jsonl", [
     user([{"type": "tool_result", "content": "nginx"}]),
 ])
 write(P + "cccccccc-0000-0000-0000-000000000003.jsonl", [user("nothing here")])
+# A key just past the edge of the snippet, and one inside it.
+write(P + "cccccccc-0000-0000-0000-000000000004.jsonl", [user("deploy nginx " + "w " * 15 + akey + " done")])
+write(P + "cccccccc-0000-0000-0000-000000000005.jsonl", [user("nginx key " + akey + " here")])
 
 C = sr + "/codex/sessions/2026/03/05/"
 def item(kind, payload):
@@ -1599,20 +1602,33 @@ con.commit()
 PY
 sr_cl() { CLAUDE_CONFIG_DIR="$SR/claude" CLAUDE_CODE_SESSION_ID='' IDE_SESSIONS_REDACTOR='' "$ROOT/bin/claude-sessions" "$@" 2>&1; }
 sr_cx() { CODEX_HOME="$SR/codex" IDE_SESSIONS_REDACTOR='' "$ROOT/bin/codex-sessions" "$@" 2>&1; }
-sr_row() { printf '%s\n' "$1" | awk -v id="$2" '$0 ~ id { print $5; exit }'; }
+sr_row() { printf '%s\n' "$1" | awk -v id="$2" '$0 ~ id { print $5 "/" $6 "/" $7; exit }'; }
 
 out="$(sr_cl --search nginx)"
-contains "search: HITS column"                                "$out" "HITS"
+contains "search: YOU, AI and TOOLS columns"                  "$out" "TURNS  YOU AI TOOLS"
+contains "search: MATCH replaces ABOUT"                       "$out" "MATCH"
+contains "search: MATCH is the user's latest match"           "$out" "you: first line Nginx at start"
+absent   "search: a session with tool hits only is hidden"    "$out" "000000000002"
+k4=$(printf '%s\n' "$out" | grep '000000000004')
+absent   "search: a key cut by the snippet edge is not shown"  "$k4" "AKIA"
+contains "search: the snippet stops before the cut word"     "$k4" "w w w…"
+contains "search: a whole key in the snippet is masked"      "$out" "you: nginx key <REDACTED:20> here"
+contains "search: the hidden ones are counted"                "$out" "+1 more session(s) have /nginx/ only in tool output"
+out="$(sr_cl --search nginx --all)"
 if [ "$(sr_row "$out" 000000000001)" = 2/1/4 ]; then ok "search: you / model / tools counted apart, injected text not at all"
 else nope "search: you / model / tools counted apart, injected text not at all" "$(sr_row "$out" 000000000001)"; fi
 if [ "$(sr_row "$out" 000000000002)" = 0/0/1 ]; then ok "search: a tool result alone is a tool hit"
 else nope "search: a tool result alone is a tool hit" "$(sr_row "$out" 000000000002)"; fi
 absent   "search: a session without a hit is not listed"      "$out" "000000000003"
-first=$(printf '%s\n' "$out" | grep -m1 -o 'cccccccc-[0-9a-f-]*')
-if [ "$first" = cccccccc-0000-0000-0000-000000000001 ]; then ok "search: the most mentioned by the user comes first"
-else nope "search: the most mentioned by the user comes first" "$first"; fi
-contains "search: the legend says what HITS counts"           "$out" "HITS: matches in your prompts"
-out="$(sr_cl --search nginx --min-hits 2)"
+last=$(printf '%s\n' "$out" | grep -o 'cccccccc-[0-9a-f-]*' | tail -1)
+if [ "$last" = cccccccc-0000-0000-0000-000000000001 ]; then ok "search: the most mentioned by the user comes last, next to the prompt"
+else nope "search: the most mentioned by the user comes last, next to the prompt" "$last"; fi
+out="$(sr_cl --search nginx --all -n 1)"
+if [ "$(printf '%s\n' "$out" | grep -o 'cccccccc-[0-9a-f-]*')" = cccccccc-0000-0000-0000-000000000001 ]; then
+    ok "search: -n keeps the best rows"
+else nope "search: -n keeps the best rows" "$(printf '%s\n' "$out" | grep -o 'cccccccc-[0-9a-f-]*')"; fi
+contains "search: the legend says what the columns count"     "$out" "YOU / AI / TOOLS: matches in your prompts"
+out="$(sr_cl --search nginx --min-hits 2 --all)"
 absent   "search: --min-hits drops the rows under it"         "$out" "000000000002"
 out="$(sr_cl --search '^nginx')"
 if [ "$(sr_row "$out" 000000000001)" = 1/1/4 ]; then ok "search: ^ holds at every line, across an escaped line break"
@@ -1621,6 +1637,8 @@ out="$(sr_cl --search 'ПОЧИНИ\s+NGINX\b')"
 if [ "$(sr_row "$out" 000000000001)" = 1/0/0 ]; then ok "search: any case, Cyrillic included; \\s and \\b work"
 else nope "search: any case, Cyrillic included; \\s and \\b work" "$(sr_row "$out" 000000000001)"; fi
 out="$(sr_cl --search 'n.*?x -t')"
+contains "search: all hidden says so and names --all"        "$out" "only in tool output — add --all"
+out="$(sr_cl --search 'n.*?x -t' --all)"
 if [ "$(sr_row "$out" 000000000001)" = 0/0/1 ]; then ok "search: a non-greedy pattern"
 else nope "search: a non-greedy pattern" "$(sr_row "$out" 000000000001)"; fi
 out="$(sr_cl --search 'zzz-nowhere')"
@@ -1653,7 +1671,7 @@ else nope "search: codex — no injected context, no double count of event_msg" 
 if [ "$(sr_row "$out" 0000000000c2)" = 1/0/0 ]; then ok "search: codex — the older rollout format counts"
 else nope "search: codex — the older rollout format counts" "$(sr_row "$out" 0000000000c2)"; fi
 
-out="$(OPENCODE_DATA_DIR="$SR/opencode" IDE_SESSIONS_REDACTOR='' "$ROOT/bin/opencode-sessions" --search nginx 2>&1)"
+out="$(OPENCODE_DATA_DIR="$SR/opencode" IDE_SESSIONS_REDACTOR='' "$ROOT/bin/opencode-sessions" --search nginx --all 2>&1)"
 if [ "$(sr_row "$out" 000000000001)" = 1/2/2 ]; then ok "search: opencode — synthetic text skipped, tool metadata not counted twice"
 else nope "search: opencode — synthetic text skipped, tool metadata not counted twice" "$(sr_row "$out" 000000000001)"; fi
 if [ "$(sr_row "$out" 000000000002)" = 0/0/1 ]; then ok "search: opencode — a subagent's session is tool work"

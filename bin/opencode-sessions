@@ -42,6 +42,7 @@ MAX_TURNS=""
 ABOUT_MIN=500
 SEARCH=""
 MIN_HITS=1
+SEARCH_ALL=0
 APPLY=0
 ASSUME_YES=0
 DRY_RUN=0
@@ -60,7 +61,7 @@ CHILD_TABLES="part message todo session_share session_message session_context_ep
 usage() {
   cat <<'EOF'
 Usage: opencode-sessions [-n LIMIT] [-f] [-p] [substring]
-       opencode-sessions --search REGEX [--min-hits N]
+       opencode-sessions --search REGEX [--min-hits N] [--all]
        opencode-sessions --sum <ID>
        opencode-sessions --sum-orig <ID>
        opencode-sessions --rm <ID>[,<ID>...]
@@ -76,25 +77,29 @@ Usage: opencode-sessions [-n LIMIT] [-f] [-p] [substring]
 
 Search:
   --search REGEX    only sessions that mention REGEX — Python syntax, any case,
-                    ^ and $ at every line. HITS counts the matches in your
-                    prompts / the model's replies / its tools (calls and output);
-                    rows with the most in your prompts come first. Injected
-                    text is not searched; a subagent's session counts as tools.
-  --min-hits N      only sessions with N hits or more in total (default: 1)
+                    ^ and $ at every line. YOU, AI and TOOLS count the matches
+                    in your prompts, the model's replies and its tool calls
+                    with their output; MATCH shows the latest one, yours first.
+                    The most matches in your prompts go last, above the prompt.
+                    Injected instructions and reminders are not searched.
+  --min-hits N      only sessions with N matches or more in total (default: 1)
+  --all             also the sessions that have it only in tool output — hidden
+                    by default: that is usually a file the model read
 
 What the search shows:
 
-  opencode-sessions --search nginx                      LISTS the sessions that mention nginx, with HITS
-  opencode-sessions --search nginx -n 10                the 10 with the most hits in your prompts
-  opencode-sessions --search nginx --min-hits 20        only sessions with 20 hits or more in total
+  opencode-sessions --search nginx                      LISTS the sessions where you or the model mention nginx
+  opencode-sessions --search nginx -n 10                the 10 with the most matches in your prompts
+  opencode-sessions --search nginx --min-hits 20        only sessions with 20 matches or more in total
+  opencode-sessions --search nginx --all                also the sessions with nginx only in tool output
   opencode-sessions -p --search nginx                   this project's sessions only
   opencode-sessions k8s --search nginx                  only in directories matching "k8s"
   opencode-sessions --search 'fluent-?bit|fluentd'      fluentbit, fluent-bit or fluentd
   opencode-sessions --search '^\s*server_name'          lines that start with server_name
   opencode-sessions --search 'proxy_pass\s+https?://'   a regex: proxy_pass, spaces, a URL
 
-  HITS 21/217/1444 = 21 matches in your prompts, 217 in the model's replies,
-  1444 in its tool calls and their output. Search never deletes anything.
+  YOU 21  AI 217  TOOLS 1444 = 21 matches in your prompts, 217 in the model's
+  replies, 1444 in its tool calls and their output. Search never deletes anything.
 
 Summary of one session, grouped by topic (English unless --sum-orig):
   --sum ID          summarize that session; the result is cached per session
@@ -170,6 +175,7 @@ while [ $# -gt 0 ]; do
     --search) [ -n "${2:-}" ] || { echo "--search needs a pattern" >&2; exit 1; }
               SEARCH="$2"; shift 2 ;;
     --min-hits) MIN_HITS="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --all) SEARCH_ALL=1; shift ;;
     --trash) TRASH_ROOT="$2"; shift 2 ;;
     --apply) APPLY=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
@@ -982,14 +988,42 @@ def flat(v):
         return '\n'.join(flat(x) for k, x in v.items() if k != 'type')
     return ''
 
+SEARCH_SNIP = 40
+
+def search_snip(text, rx):
+    # The last match in TEXT with some words either side, on one line. Words
+    # are kept whole, the matched one included: a token cut in half no longer
+    # has the shape of a credential, and the masking that runs on the snippet
+    # would let its first half through. A matched word over 200 characters is
+    # a blob, not a word, and is not shown.
+    m = None
+    for m in rx.finditer(text):
+        pass
+    if m is None:
+        return ''
+    ms, me, n = m.start(), m.end(), len(text)
+    while ms > 0 and not text[ms - 1].isspace():
+        ms -= 1
+    while me < n and not text[me].isspace():
+        me += 1
+    if me - ms > 200:
+        return '<a match inside %d characters without a space>' % (me - ms)
+    a, b = max(0, ms - SEARCH_SNIP), min(n, me + SEARCH_SNIP)
+    while 0 < a < ms and not text[a - 1].isspace():
+        a += 1
+    while me < b < n and not text[b].isspace():
+        b -= 1
+    return ('…' if a else '') + ' '.join(text[a:b].split()) + ('…' if b < n else '')
+
 def search_jsonl(rows, rx, pattern, extra):
-    # Hits per row, for an IDE that keeps a session in JSONL files: ripgrep
-    # picks the lines, search_parts() says whose words each one holds.
+    # Hits and the latest snippet of each kind per row, for an IDE that keeps a
+    # session in JSONL files: ripgrep picks the lines, search_parts() says
+    # whose words each one holds.
     files = [search_files(r.split('\t'), extra) for r in rows]
     lines = search_lines(search_wide(pattern), sorted({p for fs in files for p, _ in fs}))
     out = []
     for fs in files:
-        hits = [0, 0, 0]
+        hits, snips = [0, 0, 0], ['', '', '']
         for path, sub in fs:
             want = lines.get(path)
             if not want:
@@ -997,6 +1031,7 @@ def search_jsonl(rows, rx, pattern, extra):
             # A rollout written across a format change holds every message
             # twice; the older copy counts only where the newer has none.
             new, old, last = [0, 0, 0], [0, 0, 0], max(want)
+            new_s, old_s = ['', '', ''], ['', '', '']
             with open(path, errors='replace') as fh:
                 for num, raw in enumerate(fh, 1):
                     if num > last:
@@ -1011,24 +1046,47 @@ def search_jsonl(rows, rx, pattern, extra):
                         continue
                     for who, text, legacy in search_parts(d):
                         k = sum(1 for _ in rx.finditer(text or ''))
-                        (old if legacy else new)[2 if sub else who] += k
-            use = old if not (new[0] or new[1]) else [0, 0, 0]
+                        if not k:
+                            continue
+                        who = 2 if sub else who
+                        (old if legacy else new)[who] += k
+                        (old_s if legacy else new_s)[who] = search_snip(text, rx)
+            if new[0] or new[1]:
+                old, old_s = [0, 0, 0], ['', '', '']
             for i in range(3):
-                hits[i] += new[i] + use[i]
-        out.append(hits)
+                hits[i] += new[i] + old[i]
+                snips[i] = new_s[i] or old_s[i] or snips[i]
+        out.append((hits, snips))
     return out
 
-def search_rows(rows_file, pattern, min_hits, extra):
-    # Prints the rows with a hit, each with its counts as one more field. The
-    # rows arrive newest first and the sort is stable, so ties stay that way.
+def search_rows(rows_file, pattern, min_hits, show_all, extra):
+    # Prints `#hidden N`, then each row with a hit and four more fields: the
+    # hits in prompts, replies and tools, and where the latest one was said —
+    # the user's words first. A session that has the pattern only in tool
+    # output is hidden unless SHOW_ALL: it is usually a file that was read.
+    # The rows arrive newest first and the sort is stable, so ties stay so.
     rx = search_rx(pattern)
     with open(rows_file, errors='replace') as fh:
         rows = [r.rstrip('\n') for r in fh if r.strip()]
-    out = [(h, r) for h, r in zip(search_count(rows, rx, pattern, extra), rows)
-           if sum(h) and sum(h) >= min_hits]
+    out, hidden = [], 0
+    for (h, s), r in zip(search_count(rows, rx, pattern, extra), rows):
+        if not sum(h) or sum(h) < min_hits:
+            continue
+        if not (h[0] or h[1] or show_all):
+            hidden += 1
+            continue
+        who = next(i for i in range(3) if h[i])
+        out.append((h, r, redact(('you: ', 'ai: ', 'tool: ')[who] + s[who])))
     out.sort(key=lambda x: (-x[0][0], -sum(x[0])))
-    for hits, row in out:
-        print('%s\t%d/%d/%d' % (row, hits[0], hits[1], hits[2]))
+    # The shared redactor once over every snippet, as for ABOUT; kept only if
+    # it gave back as many lines as it got.
+    if out:
+        masked = scrub('\n'.join(x[2] for x in out)).rstrip('\n').split('\n')
+        if len(masked) == len(out):
+            out = [(h, r, m) for (h, r, _), m in zip(out, masked)]
+    print('#hidden\t%d' % hidden)
+    for hits, row, snip in out:
+        print('%s\t%d\t%d\t%d\t%s' % (row, hits[0], hits[1], hits[2], snip))
 
 # ── SEARCH: this IDE ────────────────────────────────────────────────────────
 def search_count(rows, rx, pattern, extra):
@@ -1042,10 +1100,12 @@ def search_count(rows, rx, pattern, extra):
         "SELECT id FROM session WHERE id IN (SELECT id FROM search_ids)"
         " AND parent_id IS NOT NULL AND parent_id != ''")}
     hits = {i: [0, 0, 0] for i in ids}
+    snips = {i: ['', '', ''] for i in ids}
     for sid, role, data in con.execute("""
             SELECT p.session_id, json_extract(m.data, '$.role'), p.data
             FROM part p JOIN message m ON m.id = p.message_id
-            WHERE p.session_id IN (SELECT id FROM search_ids)"""):
+            WHERE p.session_id IN (SELECT id FROM search_ids)
+            ORDER BY p.time_created, p.id"""):
         try:
             d = json.loads(data)
         except (TypeError, ValueError):
@@ -1068,18 +1128,22 @@ def search_count(rows, rx, pattern, extra):
             who, text = 2, flat(d.get('source'))
         else:
             continue
-        hits[sid][2 if sid in child else who] += sum(1 for _ in rx.finditer(text))
-    return [hits[i] for i in ids]
+        k = sum(1 for _ in rx.finditer(text))
+        if k:
+            who = 2 if sid in child else who
+            hits[sid][who] += k
+            snips[sid][who] = search_snip(text, rx)
+    return [(hits[i], snips[i]) for i in ids]
 
 # `--about ROWS MIN`: the listing's ABOUT column, then nothing else.
 if sid == '--about':
     about_rows(sys.argv[4], int(sys.argv[5]), 3)
     sys.exit(0)
 
-# `--search ROWS PATTERN MIN`: the rows that mention PATTERN, each with its
+# `--search ROWS PATTERN MIN ALL`: the rows that mention PATTERN, each with its
 # hits, most mentioned by the user first; then nothing else.
 if sid == '--search':
-    search_rows(sys.argv[4], sys.argv[5], int(sys.argv[6]), '')
+    search_rows(sys.argv[4], sys.argv[5], int(sys.argv[6]), sys.argv[7] == '1', '')
     sys.exit(0)
 
 turns = []
@@ -1468,11 +1532,22 @@ fi
 if [ -n "$SEARCH" ] && [ -n "$rows" ]; then
   search_in=$(mktemp)
   printf '%s\n' "$rows" > "$search_in"
-  rows=$(sum_digest --search "$search_in" "$SEARCH" "$MIN_HITS") || { rm -f "$search_in"; exit 1; }
+  out=$(sum_digest --search "$search_in" "$SEARCH" "$MIN_HITS" "$SEARCH_ALL") || { rm -f "$search_in"; exit 1; }
   rm -f "$search_in"
-  [ -n "$rows" ] || { echo "No session mentions /$SEARCH/$( [ "$MIN_HITS" -gt 1 ] && echo " $MIN_HITS or more times")."; exit 0; }
+  hidden=$(printf '%s\n' "$out" | sed -n 's/^#hidden\t//p')
+  rows=$(printf '%s\n' "$out" | grep -v '^#hidden' || true)
+  if [ -z "$rows" ]; then
+    if [ "${hidden:-0}" -gt 0 ]; then
+      echo "No session where you or the model mention /$SEARCH/; $hidden have it only in tool output — add --all to list them."
+    else
+      echo "No session mentions /$SEARCH/$( [ "$MIN_HITS" -gt 1 ] && echo " $MIN_HITS or more times")."
+    fi
+    exit 0
+  fi
 fi
 [ "$LIMIT" != 0 ] && rows=$(echo "$rows" | head -n "$LIMIT")
+# The best search matches go last, next to the prompt; -n above kept the best.
+[ -n "$SEARCH" ] && rows=$(printf '%s\n' "$rows" | tac)
 
 if [ "$DELETE_MODE" = 1 ]; then
   seeds=$(printf '%s\n' "$rows" | awk -F'\t' \
@@ -1685,24 +1760,35 @@ fi
 
 # ABOUT: one python run over every row, before the table. A failure leaves the
 # table as it was, without the column.
-about_in=$(mktemp)
-printf '%s\n' "$rows" > "$about_in"
-with_about=$(sum_digest --about "$about_in" "$ABOUT_MIN" 2>/dev/null || true)
-rm -f "$about_in"
-[ -n "$with_about" ] && rows=$with_about
+# Under --search MATCH stands in its place, so the column is not computed.
+about_head=ABOUT
+if [ -n "$SEARCH" ]; then
+  about_head=MATCH
+else
+  about_in=$(mktemp)
+  printf '%s\n' "$rows" > "$about_in"
+  with_about=$(sum_digest --about "$about_in" "$ABOUT_MIN" 2>/dev/null || true)
+  rm -f "$about_in"
+  [ -n "$with_about" ] && rows=$with_about
+fi
 read -r dir_w about_any <<EOF_W
-$(printf '%s\n' "$rows" | about_widths 2 "$([ -n "$SEARCH" ] && echo 7 || echo 6)")
+$(printf '%s\n' "$rows" | about_widths 2 "$([ -n "$SEARCH" ] && echo 9 || echo 6)")
 EOF_W
-# HITS sits after MSGS, as wide as its widest value.
-hits_w=0
-[ -n "$SEARCH" ] && hits_w=$(printf '%s\n' "$rows" |
-  awk -F'\t' -v c=6 '{ if (length($c) > w) w = length($c) } END { print (w > 4 ? w : 4) }')
-hits_col() { [ "$hits_w" -gt 0 ] && printf '%-*s ' "$hits_w" "$1"; return 0; }
+# YOU, AI and TOOLS sit after MSGS, each as wide as its widest value.
+yw=0; aw=0; tw=0
+if [ -n "$SEARCH" ]; then
+  read -r yw aw tw <<EOF_H
+$(printf '%s\n' "$rows" | awk -F'\t' -v c=6 '
+    { for (i = 0; i < 3; i++) if (length($(c + i)) > w[i]) w[i] = length($(c + i)) }
+    END { print (w[0] > 3 ? w[0] : 3), (w[1] > 2 ? w[1] : 2), (w[2] > 5 ? w[2] : 5) }')
+EOF_H
+fi
+hits_w=$(( yw + aw + tw ))
+hits_col() { [ "$hits_w" -gt 0 ] && printf '%-*s %-*s %-*s ' "$yw" "$1" "$aw" "$2" "$tw" "$3"; return 0; }
 # One row of the listing, with or without the HITS field before ABOUT.
 read_row() {
-  hits=''
   if [ -n "$SEARCH" ]; then
-    IFS=$'\t' read -r sid directory tupd msgs cost hits about
+    IFS=$'\t' read -r sid directory tupd msgs cost you ai tools about
   else
     IFS=$'\t' read -r sid directory tupd msgs cost about
   fi
@@ -1713,7 +1799,7 @@ read_row() {
 room=0; rest=0; about_pad=''
 if [ -t 1 ]; then
   cols=$(tput cols 2>/dev/null || echo 0)
-  start=$(( 70 + dir_w + 2 + (hits_w > 0 ? hits_w + 1 : 0) ))
+  start=$(( 70 + dir_w + 2 + (hits_w > 0 ? hits_w + 3 : 0) ))
   room=$(( ${cols:-0} - start ))
   if [ "$room" -ge 50 ]; then
     rest=$room; about_pad=$(printf '%*s' "$start" '')
@@ -1725,9 +1811,9 @@ if [ -t 1 ]; then
 fi
 
 if [ "$about_any" = 1 ]; then
-  printf "%-30s %-10s %-6s %s%-8s %-11s %-${dir_w}s  %s\n" "SESSION ID (full)" "LAST" "MSGS" "$(hits_col HITS)" "COST" "DATE" "DIR" "ABOUT"
+  printf "%-30s %-10s %-6s %s%-8s %-11s %-${dir_w}s  %s\n" "SESSION ID (full)" "LAST" "MSGS" "$(hits_col YOU AI TOOLS)" "COST" "DATE" "DIR" "$about_head"
 else
-  printf "%-30s %-10s %-6s %s%-8s %-11s %s\n" "SESSION ID (full)" "LAST" "MSGS" "$(hits_col HITS)" "COST" "DATE" "DIR"
+  printf "%-30s %-10s %-6s %s%-8s %-11s %s\n" "SESSION ID (full)" "LAST" "MSGS" "$(hits_col YOU AI TOOLS)" "COST" "DATE" "DIR"
 fi
 
 while read_row; do
@@ -1737,13 +1823,18 @@ while read_row; do
   date_str=$(date -d "@$mtime" +"%m-%d %H:%M" 2>/dev/null || date -r "$mtime" +"%m-%d %H:%M")
   dir_disp=$(shorten_dir "$directory")
   if [ "$about_any" = 1 ]; then
-    printf "%-30s %-10s %-6s %s\$%-7s %-11s %-${dir_w}s  %s\n" "$sid" "$age" "$msgs" "$(hits_col "$hits")" "$cost" "$date_str" "$dir_disp" "$(about_lines "$about" "$room" "$rest" "$about_pad")"
+    printf "%-30s %-10s %-6s %s\$%-7s %-11s %-${dir_w}s  %s\n" "$sid" "$age" "$msgs" "$(hits_col "${you:-}" "${ai:-}" "${tools:-}")" "$cost" "$date_str" "$dir_disp" "$(about_lines "$about" "$room" "$rest" "$about_pad")"
   else
-    printf "%-30s %-10s %-6s %s\$%-7s %-11s %s\n" "$sid" "$age" "$msgs" "$(hits_col "$hits")" "$cost" "$date_str" "$dir_disp"
+    printf "%-30s %-10s %-6s %s\$%-7s %-11s %s\n" "$sid" "$age" "$msgs" "$(hits_col "${you:-}" "${ai:-}" "${tools:-}")" "$cost" "$date_str" "$dir_disp"
   fi
 done <<< "$rows"
 
 echo
-[ -n "$SEARCH" ] && echo "HITS: matches in your prompts / the model's replies / its tool calls and their output"
+if [ -n "$SEARCH" ]; then
+  [ "${hidden:-0}" -gt 0 ] && echo "+$hidden more session(s) have /$SEARCH/ only in tool output — add --all to list them"
+  echo "YOU / AI / TOOLS: matches in your prompts / the model's replies / its tool calls and their output."
+  echo "MATCH: the latest match — from your prompts if there is one, else from a reply, else from a tool."
+  echo
+fi
 echo "Resume: cd <DIR> && opencode -s <SESSION ID>   (add --fork to branch instead of continuing)"
 echo "Delete: opencode-sessions --rm <SESSION ID>    (asks to confirm; --dry-run to preview)"

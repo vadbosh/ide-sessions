@@ -98,7 +98,7 @@ claude-sessions k8s                 # фильтр по подстроке ка�
 claude-sessions -p                  # только сессии текущего проекта
 claude-sessions -f                  # полные пути вместо последних трёх частей
 claude-sessions --about-min 100     # ABOUT для сессий от 100 ходов
-claude-sessions --search nginx      # только сессии, где встречается nginx, с HITS
+claude-sessions --search nginx      # только сессии, где встречается nginx, с числом совпадений
 
 claude-sessions --rm <ID>                    # спросит подтверждение и удалит
 claude-sessions --older-than 30              # покажет список, не удалит ничего
@@ -157,21 +157,31 @@ $ claude-sessions -p
 
 ```
 $ claude-sessions --search nginx -n 3
-    SESSION ID (full)                    LAST       TURNS  HITS         DATE        DIR          ABOUT
-    5b1e07c2-8f3a-4d61-9c2e-1a7d40e9b311 68d ago    1170   49/44/149    08-08 22:10 /srv/logs    commit: collect the Envoy Gateway logs
-    c93a4f10-2b6e-4e8d-a0f5-7d2c18b6e402 1d ago     4098   21/217/1444  10-14 16:58 /srv/web     edit nginx.conf, 03-server.md
-    0e7d5a29-c4b1-4f37-8e66-93b2f05ac8d7 66d ago    1458   3/7/4        08-10 20:47 /srv/cert    edit 01-cert-manager.md
+    SESSION ID (full)                    LAST       TURNS  YOU AI  TOOLS DATE        DIR        MATCH
+    0e7d5a29-c4b1-4f37-8e66-93b2f05ac8d7 66d ago    1458   0   7   4     08-10 20:47 /srv/cert  ai: …the ingress-nginx annotation is not needed…
+    c93a4f10-2b6e-4e8d-a0f5-7d2c18b6e402 1d ago     4098   21  217 1444  10-14 16:58 /srv/web   you: …move the rate limit from nginx to the app…
+    5b1e07c2-8f3a-4d61-9c2e-1a7d40e9b311 68d ago    1170   49  44  149   08-08 22:10 /srv/logs  you: …why does nginx drop the upstream on reload…
 
-HITS: matches in your prompts / the model's replies / its tool calls and their output
++5 more session(s) have /nginx/ only in tool output — add --all to list them
+YOU / AI / TOOLS: matches in your prompts / the model's replies / its tool calls and their output.
+MATCH: the latest match — from your prompts if there is one, else from a reply, else from a tool.
 ```
 
-`--search REGEX` оставляет в списке только сессии, где встречается REGEX. В
-HITS три числа: совпадения в запросах пользователя, в ответах модели и в
-вызовах инструментов вместе с их выводом. Слово в запросах пользователя
-значит, что работа была именно о нём, а один прочитанный моделью файл может
-дать сорок совпадений в инструментах. Поэтому первыми идут сессии, где больше
-всего совпадений в запросах пользователя. `--min-hits N` скрывает сессии, где совпадений
-всего меньше N, а `-n` оставляет лучшие строки.
+`--search REGEX` оставляет в списке только сессии, где встречается REGEX.
+Совпадения считаются в трёх колонках: YOU — в запросах пользователя, AI — в
+ответах модели, TOOLS — в вызовах инструментов вместе с их выводом. Слово в
+запросах пользователя значит, что работа была именно о нём, а один прочитанный
+моделью файл может дать сорок совпадений в инструментах. Поэтому сессии, где
+больше всего совпадений в запросах пользователя, идут последними, прямо над
+приглашением командной строки. MATCH показывает
+последнее совпадение с несколькими словами вокруг: из запросов пользователя,
+если оно там есть, иначе из ответа модели, иначе из инструментов. При
+`--search` эта колонка стоит вместо ABOUT и маскируется так же.
+
+Сессия, где шаблон встречается только в выводе инструментов, скрыта: обычно
+это файл или вывод команды, который прочитала модель. Строка под таблицей
+говорит, сколько таких скрыто, а `--all` показывает и их. `--min-hits N`
+скрывает сессии, где совпадений всего меньше N, а `-n` оставляет лучшие строки.
 
 Шаблон — регулярное выражение Python. Регистр не важен, `^` и `$` срабатывают
 на каждой строке. Нежадный `.*?`, `\b` и lookaround работают как в Python:
@@ -189,9 +199,10 @@ codex-sessions  --search '(?<=/etc/)nginx'
 `claude-sessions` и `codex-sessions` нужен ripgrep (`rg`). Без него `--search`
 останавливается и подсказывает, как его установить. ripgrep находит строки,
 в которых может быть совпадение, а Python считает только их. На 500 МБ
-транскриптов это меньше секунды сверх обычного списка. `opencode-sessions`
-читает одну базу, и ripgrep ему не нужен. `--search` только показывает список,
-вместе с `--rm` и другими флагами удаления он не работает.
+транскриптов поиск идёт не дольше обычного списка: колонку ABOUT он не
+считает. `opencode-sessions` читает одну базу, и ripgrep ему не нужен.
+`--search` только показывает список, вместе с `--rm` и другими флагами удаления
+он не работает.
 
 Сводки:
 

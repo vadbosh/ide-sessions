@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.15.1
+
+- **`--search` said how many matches, never why.** The ABOUT column showed the
+  last commit of each session, so a row for `croc` read "an Opencode id is not
+  masked", and the reader had to open the session to see why it was listed.
+  Under `--search` the last column is now MATCH: the latest match with a few
+  words around it — from the user's prompts if there is one, else from a reply,
+  else from a tool — masked like ABOUT. The snippet is cut only between words:
+  a word cut in half no longer looks like a key, and its first half would get
+  past the masking. ABOUT is not computed then, so the
+  search is no slower than the plain listing.
+- **HITS `10/118/949` became three columns, YOU, AI and TOOLS.** The meaning of
+  the three numbers was only in the legend under the table.
+- **Sessions that have the pattern only in tool output are hidden.** For
+  `croc` they were 20 rows of 28, mostly files the model read; they buried the
+  sessions where the user worked on it. One line under the table counts them,
+  and `--all` lists them.
+- **The best matches are listed last**, right above the prompt. `-n` still
+  keeps the best rows.
+
 ## 0.15.0
 
 - **`--search REGEX`: which sessions worked on something.** All three
