@@ -221,6 +221,11 @@ say "── IDEs found ──"
 [ -f "${OPENCODE_DATA_DIR:-$HOME/.local/share/opencode}/opencode.db" ] \
     && ok   "    opencode-sessions — database found" \
     || warn "    opencode-sessions — no opencode.db, will list nothing"
+# --search in claude-sessions and codex-sessions reads the transcripts through
+# ripgrep and refuses to run without it; everything else works as before.
+command -v rg >/dev/null 2>&1 \
+    && ok   "    rg (for --search) — $(rg --version 2>/dev/null | head -1)" \
+    || warn "    rg (for --search) — not found: apt install ripgrep (or brew install ripgrep)"
 
 # billing prices the sessions through ccusage and lays the tables out with jq.
 # Missing either, it installs anyway and says what to install when it runs.

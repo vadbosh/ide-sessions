@@ -35,6 +35,8 @@ EVERYWHERE=0
 OLDER_THAN=""
 MAX_TURNS=""
 ABOUT_MIN=500
+SEARCH=""
+MIN_HITS=1
 APPLY=0
 ASSUME_YES=0
 DRY_RUN=0
@@ -49,6 +51,7 @@ SUM_LANG=en
 usage() {
   cat <<'EOF'
 Usage: codex-sessions [-n LIMIT] [-f] [-p] [substring]
+       codex-sessions --search REGEX [--min-hits N]
        codex-sessions --sum <ID>
        codex-sessions --sum-orig <ID>
        codex-sessions --rm <ID>[,<ID>...]
@@ -61,6 +64,28 @@ Usage: codex-sessions [-n LIMIT] [-f] [-p] [substring]
   substring         filter by dir substring
   --about-min N     ABOUT column for sessions of N turns or more: the last
                     commit and the last files edited (default: 500)
+
+Search (needs ripgrep):
+  --search REGEX    only sessions that mention REGEX — Python syntax, any case,
+                    ^ and $ at every line. HITS counts the matches in your
+                    prompts / the model's replies / its tools (calls and output);
+                    rows with the most in your prompts come first. Injected
+                    instructions and reminders are not searched.
+  --min-hits N      only sessions with N hits or more in total (default: 1)
+
+What the search shows:
+
+  codex-sessions --search nginx                      LISTS the sessions that mention nginx, with HITS
+  codex-sessions --search nginx -n 10                the 10 with the most hits in your prompts
+  codex-sessions --search nginx --min-hits 20        only sessions with 20 hits or more in total
+  codex-sessions -p --search nginx                   this project's sessions only
+  codex-sessions k8s --search nginx                  only in directories matching "k8s"
+  codex-sessions --search 'fluent-?bit|fluentd'      fluentbit, fluent-bit or fluentd
+  codex-sessions --search '^\s*server_name'          lines that start with server_name
+  codex-sessions --search 'proxy_pass\s+https?://'   a regex: proxy_pass, spaces, a URL
+
+  HITS 21/217/1444 = 21 matches in your prompts, 217 in the model's replies,
+  1444 in its tool calls and their output. Search never deletes anything.
 
 Summary of one session, grouped by topic (English unless --sum-orig):
   --sum ID          summarize that session; the result is cached per rollout
@@ -129,6 +154,9 @@ while [ $# -gt 0 ]; do
     --older-than) OLDER_THAN="$2"; shift 2 ;;
     --max-turns) MAX_TURNS="$2"; shift 2 ;;
     --about-min) ABOUT_MIN="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --search) [ -n "${2:-}" ] || { echo "--search needs a pattern" >&2; exit 1; }
+              SEARCH="$2"; shift 2 ;;
+    --min-hits) MIN_HITS="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
     --trash) TRASH_ROOT="$2"; shift 2 ;;
     --apply) APPLY=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
@@ -646,9 +674,291 @@ def about_events(f):
                     events.append(('cmd', cmd, ''))
     return events
 
+# ── SEARCH ──────────────────────────────────────────────────────────────────
+#
+# `--search PATTERN`: the sessions that mention something, and how much. A hit
+# is counted where it was said — the user's prompts, the model's replies, or
+# its tool calls and their output — because only the first says the work was
+# about it: one file read can put a word in a session forty times. Context the
+# harness injects (instructions, reminders, skill bodies) is not counted at all.
+#
+# PATTERN is Python's re, any case, ^ and $ at every line. Reading every
+# transcript with it takes seconds; ripgrep first picks the lines that can
+# match, and only those are decoded and counted. ripgrep reads the raw JSON,
+# where a newline is `\n` and a quote `\"`, so it gets a wider pattern: no
+# anchors or lookarounds, and an escape sequence allowed wherever a character
+# could stand. Wider only — a line it skips cannot match.
+#
+# Everything from here to the per-IDE part is the same in all three scripts;
+# only search_count() and what it calls know this IDE's format.
+import shutil, subprocess
+
+SEARCH_ESC = r'\\+(?:[nrtbf"\\/]|u[0-9a-fA-F]{4})'
+SEARCH_ANY = '(?s:.*?)'
+
+def search_rx(pattern):
+    try:
+        rx = re.compile(pattern, re.I | re.M)
+    except re.error as e:
+        raise SystemExit('--search: not a regular expression: %s' % e)
+    if rx.search(''):
+        raise SystemExit('--search: %r matches empty text, so it matches everywhere' % pattern)
+    return rx
+
+def search_group_end(p, i):
+    # Index just past the group that opens at p[i] == '('.
+    depth, n = 0, len(p)
+    while i < n:
+        c = p[i]
+        if c == '\\':
+            i += 2
+            continue
+        if c == '[':
+            i = search_class_end(p, i)
+            continue
+        if c == '(':
+            depth += 1
+        elif c == ')':
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return n
+
+def search_class_end(p, i):
+    # Index just past the class that opens at p[i] == '['.
+    n, j = len(p), i + 1
+    if j < n and p[j] == '^':
+        j += 1
+    if j < n and p[j] == ']':
+        j += 1
+    while j < n and p[j] != ']':
+        j += 2 if p[j] == '\\' else 1
+    return min(j + 1, n)
+
+def search_char(c):
+    # A non-ASCII character may sit in the JSON as \uXXXX, in either case.
+    if ord(c) < 128:
+        return re.escape(c)
+    alts = {re.escape(c)}
+    for v in (c.lower(), c.upper()):
+        if len(v) == 1 and ord(v) < 0x10000:
+            alts.add(re.escape(v))
+            alts.add(r'\\+u%04x' % ord(v))
+    return '(?:%s)' % '|'.join(sorted(alts))
+
+def search_wide(p):
+    out, i, n = [], 0, len(p)
+    while i < n:
+        c = p[i]
+        if c == '\\' and i + 1 < n:
+            e = p[i + 1]
+            i += 2
+            if e in 'bBAZzG':
+                continue
+            if e in '123456789':
+                while i < n and p[i].isdigit():
+                    i += 1
+                out.append(SEARCH_ANY)
+            elif e in 'xuUN':
+                k = {'x': 2, 'u': 4, 'U': 8}.get(e, 0)
+                if e == 'N' and i < n and p[i] == '{':
+                    k = p.find('}', i) + 1 - i if '}' in p[i:] else n - i
+                i += k
+                out.append('(?:(?s:.)|%s)' % SEARCH_ESC)
+            elif e == '0':
+                out.append('(?:\\x00|%s)' % SEARCH_ESC)
+            elif e in 'sSWDnrtfv':
+                out.append('(?:\\%s|%s)' % (e, SEARCH_ESC))
+            elif e == '\\':
+                out.append(r'\\+')
+            elif e == '"':
+                out.append(r'\\*"')
+            else:
+                out.append(search_char(e) if ord(e) >= 128 else '\\' + e)
+        elif c == '[':
+            j = search_class_end(p, i)
+            out.append('(?:%s|%s)' % (p[i:j], SEARCH_ESC))
+            i = j
+        elif c == '(':
+            j = search_group_end(p, i)
+            head = p[i:i + 4]
+            if head.startswith(('(?=', '(?!', '(?<=', '(?<!', '(?#')):
+                i = j
+            elif head.startswith(('(?P=', '(?(')):
+                out.append(SEARCH_ANY)
+                i = j
+            else:
+                out.append(c)
+                i += 1
+        elif c in '^$':
+            i += 1
+        elif c == '.':
+            out.append('(?:.|%s)' % SEARCH_ESC)
+            i += 1
+        elif c == '"':
+            out.append(r'\\*"')
+            i += 1
+        elif ord(c) >= 128:
+            out.append(search_char(c))
+            i += 1
+        else:
+            out.append(c)
+            i += 1
+    return ''.join(out)
+
+def search_lines(wide, paths):
+    # {path: {line numbers}} of the lines ripgrep says can match.
+    rg = shutil.which('rg')
+    if not rg:
+        raise SystemExit(
+            '--search needs ripgrep (rg), and it is not installed.\n'
+            'Install it:  apt install ripgrep  |  dnf install ripgrep  |  brew install ripgrep')
+    found = {}
+    for k in range(0, len(paths), 500):
+        r = subprocess.run([rg, '--no-config', '--engine', 'auto', '-i', '-n', '-H',
+                            '--null', '--no-heading', '--max-columns', '1',
+                            '-e', wide, '--'] + paths[k:k + 500],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if r.returncode not in (0, 1):
+            raise SystemExit('--search: ripgrep refused the pattern:\n%s'
+                             % r.stderr.decode('utf-8', 'replace').strip())
+        for line in r.stdout.decode('utf-8', 'replace').splitlines():
+            path, _, rest = line.partition('\0')
+            num = rest.split(':', 1)[0]
+            if num.isdigit():
+                found.setdefault(path, set()).add(int(num))
+    return found
+
+def flat(v):
+    # Every string inside a tool's input or output, keys and type tags aside;
+    # an image is base64 and only ever matches by accident.
+    if isinstance(v, str):
+        return v
+    if isinstance(v, list):
+        return '\n'.join(flat(x) for x in v)
+    if isinstance(v, dict):
+        if v.get('type') in ('image', 'input_image'):
+            return ''
+        return '\n'.join(flat(x) for k, x in v.items() if k != 'type')
+    return ''
+
+def search_jsonl(rows, rx, pattern, extra):
+    # Hits per row, for an IDE that keeps a session in JSONL files: ripgrep
+    # picks the lines, search_parts() says whose words each one holds.
+    files = [search_files(r.split('\t'), extra) for r in rows]
+    lines = search_lines(search_wide(pattern), sorted({p for fs in files for p, _ in fs}))
+    out = []
+    for fs in files:
+        hits = [0, 0, 0]
+        for path, sub in fs:
+            want = lines.get(path)
+            if not want:
+                continue
+            # A rollout written across a format change holds every message
+            # twice; the older copy counts only where the newer has none.
+            new, old, last = [0, 0, 0], [0, 0, 0], max(want)
+            with open(path, errors='replace') as fh:
+                for num, raw in enumerate(fh, 1):
+                    if num > last:
+                        break
+                    if num not in want:
+                        continue
+                    try:
+                        d = json.loads(raw)
+                    except ValueError:
+                        continue
+                    if not isinstance(d, dict):
+                        continue
+                    for who, text, legacy in search_parts(d):
+                        k = sum(1 for _ in rx.finditer(text or ''))
+                        (old if legacy else new)[2 if sub else who] += k
+            use = old if not (new[0] or new[1]) else [0, 0, 0]
+            for i in range(3):
+                hits[i] += new[i] + use[i]
+        out.append(hits)
+    return out
+
+def search_rows(rows_file, pattern, min_hits, extra):
+    # Prints the rows with a hit, each with its counts as one more field. The
+    # rows arrive newest first and the sort is stable, so ties stay that way.
+    rx = search_rx(pattern)
+    with open(rows_file, errors='replace') as fh:
+        rows = [r.rstrip('\n') for r in fh if r.strip()]
+    out = [(h, r) for h, r in zip(search_count(rows, rx, pattern, extra), rows)
+           if sum(h) and sum(h) >= min_hits]
+    out.sort(key=lambda x: (-x[0][0], -sum(x[0])))
+    for hits, row in out:
+        print('%s\t%d/%d/%d' % (row, hits[0], hits[1], hits[2]))
+
+# ── SEARCH: this IDE ────────────────────────────────────────────────────────
+def search_count(rows, rx, pattern, extra):
+    return search_jsonl(rows, rx, pattern, extra)
+
+def search_files(f, extra):
+    # The rollout, then its subagents' rollouts — their work is tool work.
+    # EXTRA is the listing's subagent file: root id, rollout.
+    subs = []
+    if extra:
+        with open(extra, errors='replace') as fh:
+            for line in fh:
+                sid, _, p = line.rstrip('\n').partition('\t')
+                if sid == f[1] and p:
+                    subs.append(p)
+    return [(f[4], False)] + [(p, True) for p in sorted(subs)]
+
+def search_tool(v):
+    # Arguments and output are often JSON inside a string.
+    if isinstance(v, str) and v[:1] in '{[':
+        try:
+            return flat(json.loads(v))
+        except ValueError:
+            pass
+    return flat(v)
+
+def search_parts(d):
+    # (who, text, legacy): who is 0 the user, 1 the model, 2 its tools. The
+    # event_msg copies of the messages are the older rollout format.
+    kind, p = d.get('type'), d.get('payload')
+    if not isinstance(p, dict):
+        return []
+    sub = p.get('type') or ''
+    if kind == 'response_item':
+        if sub == 'message':
+            role = p.get('role')
+            if role == 'user':
+                return [(0, clean(blocks(p.get('content'))), False)]
+            if role == 'assistant':
+                return [(1, blocks(p.get('content')), False)]
+            return []
+        if sub == 'reasoning':
+            return [(1, flat(p.get('summary')), False)]
+        if sub == 'function_call':
+            return [(2, search_tool(p.get('arguments')), False)]
+        if sub == 'custom_tool_call':
+            return [(2, search_tool(p.get('input')), False)]
+        if sub.endswith('_output'):
+            return [(2, search_tool(p.get('output')), False)]
+        if sub.endswith('_call'):
+            return [(2, flat(p.get('action')), False)]
+        return []
+    if kind == 'event_msg':
+        if sub == 'user_message':
+            return [(0, clean(p.get('message')), True)]
+        if sub == 'agent_message':
+            return [(1, p.get('message') or '', True)]
+    return []
+
 # `--about ROWS MIN`: the listing's ABOUT column, then nothing else.
 if path == '--about':
     about_rows(sys.argv[3], int(sys.argv[4]), 3)
+    sys.exit(0)
+
+# `--search ROWS PATTERN MIN [EXTRA]`: the rows that mention PATTERN, each with
+# its hits, most mentioned by the user first; then nothing else.
+if path == '--search':
+    search_rows(sys.argv[3], sys.argv[4], int(sys.argv[5]),
+                sys.argv[6] if len(sys.argv) > 6 else '')
     sys.exit(0)
 
 items, events, tools_seen, cwd = [], [], [], ''
@@ -1062,6 +1372,15 @@ for n in "$OLDER_THAN" "$MAX_TURNS"; do
     *[!0-9]*) echo "--older-than/--max-turns want a plain number, got: $n" >&2; exit 1 ;;
   esac
 done
+case "$MIN_HITS" in
+  ''|*[!0-9]*) echo "--min-hits wants a plain number, got: $MIN_HITS" >&2; exit 1 ;;
+esac
+# A search answers "where did I work on X"; deleting by what a session merely
+# mentions would sweep far more than that, so the two do not combine.
+if [ -n "$SEARCH" ] && [ "$DELETE_MODE" = 1 ]; then
+  echo "--search only lists. Delete what it finds by id: codex-sessions --rm <ID>" >&2
+  exit 1
+fi
 case "$ABOUT_MIN" in
   ''|*[!0-9]*) echo "--about-min wants a plain number, got: $ABOUT_MIN" >&2; exit 1 ;;
 esac
@@ -1206,6 +1525,16 @@ if [ "$PROJECT_SCOPE" = 1 ]; then
   rows=$(echo "$rows" | awk -F'\t' -v c="$cur" '$3==c')
 fi
 [ -n "$FILTER" ] && rows=$(echo "$rows" | grep -F "$FILTER" || true)
+# --search: one python run over every row; ripgrep picks the lines, python
+# counts. The rows come back with their hits, ordered by them, so -n keeps the
+# best matches rather than the newest.
+if [ -n "$SEARCH" ] && [ -n "$rows" ]; then
+  search_in=$(mktemp)
+  printf '%s\n' "$rows" > "$search_in"
+  rows=$(sum_digest --search "$search_in" "$SEARCH" "$MIN_HITS" "$agents_file") || { rm -f "$search_in"; exit 1; }
+  rm -f "$search_in"
+  [ -n "$rows" ] || { echo "No session mentions /$SEARCH/$( [ "$MIN_HITS" -gt 1 ] && echo " $MIN_HITS or more times")."; exit 0; }
+fi
 [ "$LIMIT" != 0 ] && rows=$(echo "$rows" | head -n "$LIMIT")
 
 if [ "$DELETE_MODE" = 1 ]; then
@@ -1341,8 +1670,22 @@ with_about=$(sum_digest --about "$about_in" "$ABOUT_MIN" 2>/dev/null || true)
 rm -f "$about_in"
 [ -n "$with_about" ] && rows=$with_about
 read -r dir_w about_any <<EOF_W
-$(printf '%s\n' "$rows" | about_widths 3 7)
+$(printf '%s\n' "$rows" | about_widths 3 "$([ -n "$SEARCH" ] && echo 8 || echo 7)")
 EOF_W
+# HITS sits after TURNS, as wide as its widest value.
+hits_w=0
+[ -n "$SEARCH" ] && hits_w=$(printf '%s\n' "$rows" |
+  awk -F'\t' -v c=7 '{ if (length($c) > w) w = length($c) } END { print (w > 4 ? w : 4) }')
+hits_col() { [ "$hits_w" -gt 0 ] && printf '%-*s ' "$hits_w" "$1"; return 0; }
+# One row of the listing, with or without the HITS field before ABOUT.
+read_row() {
+  hits=''
+  if [ -n "$SEARCH" ]; then
+    IFS=$'\t' read -r mtime sid cwd turns fpath agents hits about
+  else
+    IFS=$'\t' read -r mtime sid cwd turns fpath agents about
+  fi
+}
 # The subagent count is shown in the same column, so it needs it too.
 if [ "$about_any" != 1 ] && printf '%s\n' "$rows" | awk -F'\t' '$6 > 0 { f = 1 } END { exit !f }'; then
   about_any=1
@@ -1353,7 +1696,7 @@ fi
 room=0; rest=0; about_pad=''
 if [ -t 1 ]; then
   cols=$(tput cols 2>/dev/null || echo 0)
-  start=$(( 69 + dir_w + 2 ))
+  start=$(( 69 + dir_w + 2 + (hits_w > 0 ? hits_w + 1 : 0) ))
   room=$(( ${cols:-0} - start ))
   if [ "$room" -ge 50 ]; then
     rest=$room; about_pad=$(printf '%*s' "$start" '')
@@ -1365,25 +1708,26 @@ if [ -t 1 ]; then
 fi
 
 if [ "$about_any" = 1 ]; then
-  printf "%-38s %-10s %-6s %-11s %-${dir_w}s  %s\n" "SESSION ID (full)" "LAST" "TURNS" "DATE" "DIR" "ABOUT"
+  printf "%-38s %-10s %-6s %s%-11s %-${dir_w}s  %s\n" "SESSION ID (full)" "LAST" "TURNS" "$(hits_col HITS)" "DATE" "DIR" "ABOUT"
 else
-  printf "%-38s %-10s %-6s %-11s %s\n" "SESSION ID (full)" "LAST" "TURNS" "DATE" "DIR"
+  printf "%-38s %-10s %-6s %s%-11s %s\n" "SESSION ID (full)" "LAST" "TURNS" "$(hits_col HITS)" "DATE" "DIR"
 fi
 
-while IFS=$'\t' read -r mtime sid cwd turns fpath agents about; do
+while read_row; do
   [ -z "$sid" ] && continue
   if [ "${agents:-0}" -gt 0 ]; then about="+$agents agents${about:+; $about}"; fi
   age=$(format_age "$mtime")
   date_str=$(date -d "@$mtime" +"%m-%d %H:%M" 2>/dev/null || date -r "$mtime" +"%m-%d %H:%M")
   dir_disp=$(shorten_dir "$cwd")
   if [ "$about_any" = 1 ]; then
-    printf "%-38s %-10s %-6s %-11s %-${dir_w}s  %s\n" "$sid" "$age" "$turns" "$date_str" "$dir_disp" "$(about_lines "$about" "$room" "$rest" "$about_pad")"
+    printf "%-38s %-10s %-6s %s%-11s %-${dir_w}s  %s\n" "$sid" "$age" "$turns" "$(hits_col "$hits")" "$date_str" "$dir_disp" "$(about_lines "$about" "$room" "$rest" "$about_pad")"
   else
-    printf "%-38s %-10s %-6s %-11s %s\n" "$sid" "$age" "$turns" "$date_str" "$dir_disp"
+    printf "%-38s %-10s %-6s %s%-11s %s\n" "$sid" "$age" "$turns" "$(hits_col "$hits")" "$date_str" "$dir_disp"
   fi
 done <<< "$rows"
 
 echo
+[ -n "$SEARCH" ] && echo "HITS: matches in your prompts / the model's replies / its tool calls and their output"
 echo "Resume: cd <DIR> && codex resume <SESSION ID>"
 echo "Fork:   cd <DIR> && codex fork <SESSION ID>   (new session id, original untouched)"
 echo "Delete: codex-sessions --rm <SESSION ID>            (asks to confirm; --dry-run to preview)"

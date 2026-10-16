@@ -100,6 +100,7 @@ claude-sessions k8s                 # filter by directory substring
 claude-sessions -p                  # only this project's sessions
 claude-sessions -f                  # full paths instead of the last 3 parts
 claude-sessions --about-min 100     # ABOUT for sessions of 100 turns or more
+claude-sessions --search nginx      # only sessions that mention nginx, with HITS
 
 claude-sessions --rm <ID>                    # confirms, then deletes
 claude-sessions --older-than 30              # lists; deletes nothing yet
@@ -152,6 +153,46 @@ leaves the column 50 characters, the text continues under it. Otherwise it
 continues on the next line, indented, across the whole width. In a pipe it stays
 on one line. Each long session adds about 50 ms: the column reads the last 2 MB
 of its transcript.
+
+Which sessions worked on something:
+
+```
+$ claude-sessions --search nginx -n 3
+    SESSION ID (full)                    LAST       TURNS  HITS         DATE        DIR          ABOUT
+    5b1e07c2-8f3a-4d61-9c2e-1a7d40e9b311 68d ago    1170   49/44/149    08-08 22:10 /srv/logs    commit: collect the Envoy Gateway logs
+    c93a4f10-2b6e-4e8d-a0f5-7d2c18b6e402 1d ago     4098   21/217/1444  10-14 16:58 /srv/web     edit nginx.conf, 03-server.md
+    0e7d5a29-c4b1-4f37-8e66-93b2f05ac8d7 66d ago    1458   3/7/4        08-10 20:47 /srv/cert    edit 01-cert-manager.md
+
+HITS: matches in your prompts / the model's replies / its tool calls and their output
+```
+
+`--search REGEX` lists only the sessions that mention REGEX. HITS has three
+numbers: the matches in your prompts, in the model's replies, and in its tool
+calls and their output. A word in your own prompts says the work was about it;
+one file the model read can add forty tool hits. So the rows with the most
+matches in your prompts come first. `--min-hits N` hides the sessions with
+fewer than N matches in total, and `-n` keeps the best rows.
+
+The pattern is a Python regular expression. The case does not matter, and `^`
+and `$` match at every line. Non-greedy `.*?`, `\b`, and lookarounds work as
+in Python:
+
+```bash
+claude-sessions --search 'fluent-?bit'
+claude-sessions --search 'proxy_pass\s+https?://' --min-hits 5
+codex-sessions  --search '(?<=/etc/)nginx'
+```
+
+Text that the assistant adds by itself is not searched: CLAUDE.md, AGENTS.md,
+rules, reminders, skill bodies. A subagent's work counts as tool work of its
+session.
+
+`claude-sessions` and `codex-sessions` need ripgrep (`rg`). Without it,
+`--search` stops and says how to install it. ripgrep finds the lines that can
+match, and Python counts only those. Over 500 MB of transcripts this takes
+under a second more than the plain listing. `opencode-sessions` reads one
+database and does not need ripgrep. `--search` only lists; it does not combine
+with `--rm` and the other delete options.
 
 Summaries:
 

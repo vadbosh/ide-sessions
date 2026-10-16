@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.15.0
+
+- **`--search REGEX`: which sessions worked on something.** All three
+  commands list only the sessions that mention REGEX, with a HITS column of
+  three numbers: matches in the user's prompts, in the model's replies, and in
+  its tool calls and their output. Rows with the most matches in the prompts
+  come first, because a word typed by the user says the work was about it, and
+  one file read by the model can add forty tool hits. `--min-hits N` drops the
+  sessions with fewer than N matches in total. The pattern is Python's `re`,
+  case-insensitive, with `^` and `$` at every line. Injected text — CLAUDE.md,
+  AGENTS.md, reminders, skill bodies, Codex's environment context and
+  developer messages, opencode's synthetic parts — is not counted. A
+  subagent's work counts as tool work of its session.
+- **ripgrep is required for `--search` in `claude-sessions` and
+  `codex-sessions`.** Reading 500 MB of transcripts with a case-insensitive
+  Python regex took 11 s; ripgrep picks the candidate lines in 0.2 s and Python
+  counts only those. ripgrep sees the raw JSON, so it gets a wider pattern —
+  anchors and lookarounds removed, an escape sequence allowed wherever a
+  character could stand — and cannot skip a line that matches: on 16 patterns
+  over the author's transcripts the result equalled a full scan. Without `rg`
+  the search stops and says how to install it; `install.sh` reports whether it
+  is there. `opencode-sessions` reads its database directly and needs no `rg`.
+- `--search` does not combine with `--rm` and the other delete options.
+
 ## 0.14.2
 
 - **The trash was readable by other users.** `--rm` created the trash

@@ -1497,6 +1497,178 @@ else
     nope "ABOUT: the three copies of the shared part are identical"
 fi
 
+# ── --search ────────────────────────────────────────────────────────────────
+# Hits are counted where they were said: the user's prompts, the model's
+# replies, its tools. What the harness injects counts nowhere. ripgrep reads
+# the raw JSON, where a line break is `\n`, so ^ and \s are tested across one.
+echo "--search"
+
+SR="$TMP/search"
+mkdir -p "$SR/claude/projects/-work-s/cccccccc-0000-0000-0000-000000000001/subagents" \
+         "$SR/codex/sessions/2026/03/05"
+python3 - "$SR" <<'PY'
+import json, sys
+sr = sys.argv[1]
+
+def write(path, rows):
+    with open(path, 'w') as fh:
+        for r in rows:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+def user(content, **kw):
+    return dict({"type": "user", "cwd": "/work/s", "timestamp": "2026-03-05T10:00:00.000Z",
+                 "message": {"content": content}}, **kw)
+
+def bot(*blocks):
+    return {"type": "assistant", "cwd": "/work/s", "timestamp": "2026-03-05T10:01:00.000Z",
+            "message": {"content": list(blocks)}}
+
+P = sr + "/claude/projects/-work-s/"
+write(P + "cccccccc-0000-0000-0000-000000000001.jsonl", [
+    user("почини nginx"),
+    user([{"type": "text", "text": "first line\nNginx at start"}]),
+    user("<system-reminder>nginx nginx</system-reminder>"),
+    user("nginx", isMeta=True),
+    user([{"type": "text", "text": "Base directory for this skill: nginx"}]),
+    bot({"type": "text", "text": "nginx reloaded"}),
+    bot({"type": "tool_use", "name": "Bash", "input": {"command": "nginx -t"}}),
+    user([{"type": "tool_result", "content": "nginx: ok\nnginx: done"}]),
+])
+write(P + "cccccccc-0000-0000-0000-000000000001/subagents/agent-a1.jsonl",
+      [bot({"type": "text", "text": "nginx"})])
+write(P + "cccccccc-0000-0000-0000-000000000002.jsonl", [
+    user("unrelated"),
+    user([{"type": "tool_result", "content": "nginx"}]),
+])
+write(P + "cccccccc-0000-0000-0000-000000000003.jsonl", [user("nothing here")])
+
+C = sr + "/codex/sessions/2026/03/05/"
+def item(kind, payload):
+    return {"timestamp": "2026-03-05T09:00:00.000Z", "type": kind, "payload": payload}
+write(C + "rollout-2026-03-05T09-00-00-01a00000-0000-7000-8000-0000000000c1.jsonl", [
+    item("session_meta", {"id": "01a00000-0000-7000-8000-0000000000c1", "cwd": "/srv/s",
+                          "base_instructions": {"text": "nginx"}}),
+    item("response_item", {"type": "message", "role": "developer",
+                           "content": [{"type": "input_text", "text": "nginx"}]}),
+    item("response_item", {"type": "message", "role": "user", "content": [
+        {"type": "input_text", "text": "<environment_context>nginx</environment_context>"},
+        {"type": "input_text", "text": "nginx please"}]}),
+    item("event_msg", {"type": "user_message", "message": "nginx please"}),
+    item("response_item", {"type": "message", "role": "assistant",
+                           "content": [{"type": "output_text", "text": "nginx done"}]}),
+    item("event_msg", {"type": "agent_message", "message": "nginx done"}),
+    item("response_item", {"type": "function_call", "name": "exec_command",
+                           "arguments": json.dumps({"cmd": "nginx -s reload"})}),
+    item("response_item", {"type": "function_call_output", "output": "nginx ok"}),
+])
+# The older format: the messages are event_msg only, and they count.
+write(C + "rollout-2026-03-05T08-00-00-01a00000-0000-7000-8000-0000000000c2.jsonl", [
+    item("session_meta", {"id": "01a00000-0000-7000-8000-0000000000c2", "cwd": "/srv/s"}),
+    item("event_msg", {"type": "user_message", "message": "старый nginx"}),
+])
+
+import os, sqlite3
+os.makedirs(sr + "/opencode", exist_ok=True)
+con = sqlite3.connect(sr + "/opencode/opencode.db")
+con.executescript("""
+CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT,
+    directory TEXT, title TEXT, cost REAL DEFAULT 0,
+    time_created INTEGER, time_updated INTEGER);
+CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT,
+    time_created INTEGER, time_updated INTEGER, data TEXT);
+CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+    time_created INTEGER, time_updated INTEGER, data TEXT);
+""")
+base = 1772445600000
+for sid, parent in (("ses_search00000000000000000001", None),
+                    ("ses_search00000000000000000002", "ses_search00000000000000000001")):
+    con.execute("INSERT INTO session VALUES (?,?,?,?,?,?,?,?)",
+                (sid, 'prj', parent, '/opt/s', 't', 0, base, base + 5000))
+parts = [("ses_search00000000000000000001", 'user', {'type': 'text', 'text': 'nginx please'}),
+         ("ses_search00000000000000000001", 'user', {'type': 'text', 'text': 'nginx', 'synthetic': True}),
+         ("ses_search00000000000000000001", 'assistant', {'type': 'reasoning', 'text': 'nginx?'}),
+         ("ses_search00000000000000000001", 'assistant', {'type': 'text', 'text': 'nginx done'}),
+         ("ses_search00000000000000000001", 'assistant', {'type': 'tool', 'tool': 'bash', 'state': {
+             'input': {'command': 'nginx -t'}, 'output': 'nginx ok', 'metadata': {'output': 'nginx ok'}}}),
+         ("ses_search00000000000000000002", 'user', {'type': 'text', 'text': 'check nginx'})]
+for i, (sid, role, p) in enumerate(parts):
+    mid = 'm%d' % i
+    con.execute("INSERT INTO message VALUES (?,?,?,?,?)", (mid, sid, base + i, base + i, json.dumps({'role': role})))
+    con.execute("INSERT INTO part VALUES (?,?,?,?,?,?)", (mid + '_p', mid, sid, base + i, base + i, json.dumps(p)))
+con.commit()
+PY
+sr_cl() { CLAUDE_CONFIG_DIR="$SR/claude" CLAUDE_CODE_SESSION_ID='' IDE_SESSIONS_REDACTOR='' "$ROOT/bin/claude-sessions" "$@" 2>&1; }
+sr_cx() { CODEX_HOME="$SR/codex" IDE_SESSIONS_REDACTOR='' "$ROOT/bin/codex-sessions" "$@" 2>&1; }
+sr_row() { printf '%s\n' "$1" | awk -v id="$2" '$0 ~ id { print $5; exit }'; }
+
+out="$(sr_cl --search nginx)"
+contains "search: HITS column"                                "$out" "HITS"
+if [ "$(sr_row "$out" 000000000001)" = 2/1/4 ]; then ok "search: you / model / tools counted apart, injected text not at all"
+else nope "search: you / model / tools counted apart, injected text not at all" "$(sr_row "$out" 000000000001)"; fi
+if [ "$(sr_row "$out" 000000000002)" = 0/0/1 ]; then ok "search: a tool result alone is a tool hit"
+else nope "search: a tool result alone is a tool hit" "$(sr_row "$out" 000000000002)"; fi
+absent   "search: a session without a hit is not listed"      "$out" "000000000003"
+first=$(printf '%s\n' "$out" | grep -m1 -o 'cccccccc-[0-9a-f-]*')
+if [ "$first" = cccccccc-0000-0000-0000-000000000001 ]; then ok "search: the most mentioned by the user comes first"
+else nope "search: the most mentioned by the user comes first" "$first"; fi
+contains "search: the legend says what HITS counts"           "$out" "HITS: matches in your prompts"
+out="$(sr_cl --search nginx --min-hits 2)"
+absent   "search: --min-hits drops the rows under it"         "$out" "000000000002"
+out="$(sr_cl --search '^nginx')"
+if [ "$(sr_row "$out" 000000000001)" = 1/1/4 ]; then ok "search: ^ holds at every line, across an escaped line break"
+else nope "search: ^ holds at every line, across an escaped line break" "$(sr_row "$out" 000000000001)"; fi
+out="$(sr_cl --search 'ПОЧИНИ\s+NGINX\b')"
+if [ "$(sr_row "$out" 000000000001)" = 1/0/0 ]; then ok "search: any case, Cyrillic included; \\s and \\b work"
+else nope "search: any case, Cyrillic included; \\s and \\b work" "$(sr_row "$out" 000000000001)"; fi
+out="$(sr_cl --search 'n.*?x -t')"
+if [ "$(sr_row "$out" 000000000001)" = 0/0/1 ]; then ok "search: a non-greedy pattern"
+else nope "search: a non-greedy pattern" "$(sr_row "$out" 000000000001)"; fi
+out="$(sr_cl --search 'zzz-nowhere')"
+contains "search: nothing found says so"                      "$out" "No session mentions /zzz-nowhere/"
+out="$(sr_cl --search '(')"; rc=$?
+contains "search: a broken pattern is named"                  "$out" "not a regular expression"
+if [ "$rc" -ne 0 ]; then ok "search: a broken pattern exits non-zero"; else nope "search: a broken pattern exits non-zero"; fi
+out="$(sr_cl --search 'x?')"
+contains "search: a pattern matching empty text is refused"  "$out" "matches empty text"
+out="$(sr_cl --search nginx --rm cccccccc-0000-0000-0000-000000000001)"; rc=$?
+contains "search: does not combine with deleting"            "$out" "--search only lists"
+if [ "$rc" -ne 0 ] && [ -e "$SR/claude/projects/-work-s/cccccccc-0000-0000-0000-000000000001.jsonl" ]; then
+    ok "search: nothing is deleted"
+else nope "search: nothing is deleted"; fi
+
+# Without ripgrep there is no search, and the message says how to get it.
+NORG="$TMP/norg"
+mkdir -p "$NORG"
+for f in /usr/bin/* /bin/*; do
+    b=$(basename "$f")
+    [ "$b" = rg ] || [ -e "$NORG/$b" ] || ln -s "$f" "$NORG/$b"
+done
+out="$(PATH="$NORG" CLAUDE_CONFIG_DIR="$SR/claude" IDE_SESSIONS_REDACTOR='' "$ROOT/bin/claude-sessions" --search nginx 2>&1)"; rc=$?
+contains "search: without rg it says to install it"          "$out" "apt install ripgrep"
+if [ "$rc" -ne 0 ]; then ok "search: without rg it exits non-zero"; else nope "search: without rg it exits non-zero"; fi
+
+out="$(sr_cx --search nginx)"
+if [ "$(sr_row "$out" 0000000000c1)" = 1/1/2 ]; then ok "search: codex — no injected context, no double count of event_msg"
+else nope "search: codex — no injected context, no double count of event_msg" "$(sr_row "$out" 0000000000c1)"; fi
+if [ "$(sr_row "$out" 0000000000c2)" = 1/0/0 ]; then ok "search: codex — the older rollout format counts"
+else nope "search: codex — the older rollout format counts" "$(sr_row "$out" 0000000000c2)"; fi
+
+out="$(OPENCODE_DATA_DIR="$SR/opencode" IDE_SESSIONS_REDACTOR='' "$ROOT/bin/opencode-sessions" --search nginx 2>&1)"
+if [ "$(sr_row "$out" 000000000001)" = 1/2/2 ]; then ok "search: opencode — synthetic text skipped, tool metadata not counted twice"
+else nope "search: opencode — synthetic text skipped, tool metadata not counted twice" "$(sr_row "$out" 000000000001)"; fi
+if [ "$(sr_row "$out" 000000000002)" = 0/0/1 ]; then ok "search: opencode — a subagent's session is tool work"
+else nope "search: opencode — a subagent's session is tool work" "$(sr_row "$out" 000000000002)"; fi
+out="$(PATH="$NORG" OPENCODE_DATA_DIR="$SR/opencode" IDE_SESSIONS_REDACTOR='' "$ROOT/bin/opencode-sessions" --search nginx 2>&1)"
+contains "search: opencode needs no rg — it reads one database" "$out" "ses_search00000000000000000001"
+
+sr_block() { sed -n '/^# ── SEARCH ─/,/^# ── SEARCH: this IDE/p' "$ROOT/bin/$1-sessions"; }
+if [ -n "$(sr_block claude)" ] && [ "$(sr_block claude)" = "$(sr_block codex)" ] \
+   && [ "$(sr_block claude)" = "$(sr_block opencode)" ]; then
+    ok "search: the three copies of the shared part are identical"
+else
+    nope "search: the three copies of the shared part are identical"
+fi
+
 # ── install.sh ──────────────────────────────────────────────────────────────
 # Into a throwaway HOME with all three assistants present. The variables the
 # installer reads to find them are cleared, so a value set in the caller's
