@@ -1773,7 +1773,7 @@ read_row() {
 # On a terminal ABOUT wraps. With room to spare it continues under its own
 # column; in a narrow window that would be a tall strip of short lines, so it
 # continues on the next line instead, indented, across the whole width.
-room=0; rest=0; about_pad=''
+room=0; rest=0; about_pad=''; about_next=0
 if [ -t 1 ]; then
   cols=$(tput cols 2>/dev/null || echo 0)
   start=$(( 71 + dir_w + 2 + (hits_w > 0 ? hits_w + 3 : 0) ))
@@ -1781,8 +1781,10 @@ if [ -t 1 ]; then
   if [ "$room" -ge 50 ]; then
     rest=$room; about_pad=$(printf '%*s' "$start" '')
   else
-    rest=$(( ${cols:-0} - 4 )); about_pad='    '
-    [ "$room" -lt 20 ] && room=20
+    # Too narrow for the column: the whole text starts on the next line. Cut at
+    # the column it left a stub like "ai: The" at the end of the row.
+    # Rows start after the 4-character mark column, so the indent is 8.
+    rest=$(( ${cols:-0} - 8 )); about_pad='        '; about_next=1
     [ "$rest" -lt 20 ] && rest=20
   fi
 fi
@@ -1797,6 +1799,15 @@ fi
 # pipe or with NO_COLOR set.
 hl_on=''; hl_off=''
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then hl_on=$'\033[1;93m'; hl_off=$'\033[0m'; fi
+# ABOUT or MATCH as printed: under its column, or whole on the next line.
+about_cell() {
+  if [ "$about_next" = 1 ] && [ -n "$1" ]; then
+    printf '\n%s' "$about_pad"
+    about_lines "$1" "$rest" "$rest" "$about_pad"
+  else
+    about_lines "$1" "$room" "$rest" "$about_pad"
+  fi
+}
 hl() { local t=${1//$'\x1e'/$hl_on}; printf '%s' "${t//$'\x1f'/$hl_off}"; }
 
 while read_row; do
@@ -1807,7 +1818,7 @@ while read_row; do
   date_str=$(date -d "@$mtime" +"%m-%d %H:%M" 2>/dev/null || date -r "$mtime" +"%m-%d %H:%M")
   dir_disp=$(shorten_dir "$cwd")
   if [ "$about_any" = 1 ]; then
-    printf "%-3s %-36s %-10s %-6s %s%-11s %-${dir_w}s  %s\n" "$mark" "$sid" "$age" "$turns" "$(hits_col "${you:-}" "${ai:-}" "${tools:-}")" "$date_str" "$dir_disp" "$(hl "$(about_lines "$about" "$room" "$rest" "$about_pad")")"
+    printf "%-3s %-36s %-10s %-6s %s%-11s %-${dir_w}s  %s\n" "$mark" "$sid" "$age" "$turns" "$(hits_col "${you:-}" "${ai:-}" "${tools:-}")" "$date_str" "$dir_disp" "$(hl "$(about_cell "$about")")"
   else
     printf "%-3s %-36s %-10s %-6s %s%-11s %s\n" "$mark" "$sid" "$age" "$turns" "$(hits_col "${you:-}" "${ai:-}" "${tools:-}")" "$date_str" "$dir_disp"
   fi

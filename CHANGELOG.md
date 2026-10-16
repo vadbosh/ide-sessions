@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.15.5
+
+- **In a narrow terminal ABOUT and MATCH start whole on the next line.** With
+  less than 50 characters left for the column, the first words stayed at the
+  end of the row and the rest went to the next line: `ai: The` there,
+  `ingress-nginx annotation…` below. Now the row ends at DIR and the whole text
+  follows, indented past the start of the row, across the width.
+- **The README pictures are drawn in a 100-column window.** At 146 columns
+  GitHub shrank them to a third, and the text was too small to read in the
+  README; it is now about 1.4 times larger.
+
 ## 0.15.4
 
 - **The README pictures were blurred.** At 13 px and 1.5× a table of 146

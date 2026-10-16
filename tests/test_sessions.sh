@@ -1484,7 +1484,7 @@ contains "ABOUT: opencode reads its tool parts"               "$out" "commit: op
 if command -v script >/dev/null 2>&1; then
     out="$(CLAUDE_CONFIG_DIR="$AB/claude" IDE_SESSIONS_REDACTOR='' \
         script -qc "stty cols 100; '$ROOT/bin/claude-sessions' --about-min 3" /dev/null 2>&1 | tr -d '\r')"
-    contains "ABOUT: a terminal gets the rest on the next line" "$out" $'\n    reads TOML; edit README.md, parser.py'
+    contains "ABOUT: a narrow terminal starts it whole on the next line" "$out" $'\n        commit: feat: parser reads TOML; edit README.md, parser.py'
     absent   "ABOUT: nothing is cut off"                         "$out" "…"
 fi
 

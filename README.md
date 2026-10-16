@@ -207,8 +207,8 @@ line is masked like the digest of `--sum` — see [Credentials](#credentials).
 `--about-min N` moves the threshold; in opencode it counts messages (`MSGS`).
 Below the threshold the column stays empty, and when no session reaches it, the
 column is not printed. On a terminal, a long ABOUT wraps. When the window
-leaves the column 50 characters, the text continues under it. Otherwise it
-continues on the next line, indented, across the whole width. In a pipe it stays
+leaves the column 50 characters, the text continues under it. Otherwise the
+whole text starts on the next line, indented, across the whole width. In a pipe it stays
 on one line. Each long session adds about 50 ms: the column reads the last 2 MB
 of its transcript.
 
