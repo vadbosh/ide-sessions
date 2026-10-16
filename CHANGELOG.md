@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.15.4
+
+- **The README pictures were blurred.** At 13 px and 1.5× a table of 146
+  columns came out 1688 px wide, and GitHub shrinks it to the README column
+  by half. They are redrawn at 15 px and 2×, with the converter that now ships
+  in the d2-diagram skill (0.4.0), which also closed a 2 px gap after
+  `ingress-` before the highlighted word.
+
 ## 0.15.3
 
 - **The matched text in MATCH is bold yellow on a terminal.** It is marked
