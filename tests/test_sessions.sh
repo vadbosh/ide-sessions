@@ -1679,6 +1679,18 @@ else nope "search: opencode — a subagent's session is tool work" "$(sr_row "$o
 out="$(PATH="$NORG" OPENCODE_DATA_DIR="$SR/opencode" IDE_SESSIONS_REDACTOR='' "$ROOT/bin/opencode-sessions" --search nginx 2>&1)"
 contains "search: opencode needs no rg — it reads one database" "$out" "ses_search00000000000000000001"
 
+# ── DIR ─────────────────────────────────────────────────────────────────────
+# Three components or fewer: the path whole, its / included. Longer: the last
+# three behind ".../". A missing / used to be the only sign of a cut, and a
+# path of exactly three lost it with nothing cut.
+DR="$TMP/dirs/projects"
+mkdir -p "$DR/-a" "$DR/-b"
+printf '{"type":"user","cwd":"/home/repos/ide-sessions","message":{"content":"x"}}\n' > "$DR/-a/dddddddd-0000-0000-0000-000000000001.jsonl"
+printf '{"type":"user","cwd":"/root/k8s/WL/PRODS","message":{"content":"x"}}\n' > "$DR/-b/dddddddd-0000-0000-0000-000000000002.jsonl"
+out="$(CLAUDE_CONFIG_DIR="$TMP/dirs" CLAUDE_CODE_SESSION_ID='' "$ROOT/bin/claude-sessions" 2>&1)"
+contains "dir: three components keep their leading /"        "$out" " /home/repos/ide-sessions"
+contains "dir: a longer path is marked as cut"                "$out" " .../k8s/WL/PRODS"
+
 sr_block() { sed -n '/^# ── SEARCH ─/,/^# ── SEARCH: this IDE/p' "$ROOT/bin/$1-sessions"; }
 if [ -n "$(sr_block claude)" ] && [ "$(sr_block claude)" = "$(sr_block codex)" ] \
    && [ "$(sr_block claude)" = "$(sr_block opencode)" ]; then

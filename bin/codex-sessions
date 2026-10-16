@@ -1535,7 +1535,9 @@ format_age() {
 shorten_dir() {
   local p="$1"
   [ "$FULL_PATH" = 1 ] && { echo "$p"; return; }
-  echo "$p" | awk -F/ '{ n=NF; if (n<=3) print $0; else print $(n-2)"/"$(n-1)"/"$n }'
+  # Up to three components the path is shown whole, its leading / included;
+  # a longer one keeps the last three behind ".../", so a cut is never silent.
+  echo "$p" | awk -F/ '{ n=NF; if (n - ($1 == "") <= 3) print $0; else print ".../" $(n-2)"/"$(n-1)"/"$n }'
 }
 
 # The widest DIR as shown, and whether any row carries an ABOUT. Read from the
@@ -1543,7 +1545,7 @@ shorten_dir() {
 about_widths() {
   awk -F'\t' -v d="$1" -v a="$2" -v full="$FULL_PATH" '
     { p = $d
-      if (full != 1) { n = split(p, s, "/"); if (n > 3) p = s[n-2] "/" s[n-1] "/" s[n] }
+      if (full != 1) { n = split(p, s, "/"); if (n - (s[1] == "") > 3) p = ".../" s[n-2] "/" s[n-1] "/" s[n] }
       if (length(p) > w) w = length(p)
       if ($a != "") any = 1 }
     END { print w + 0, any + 0 }'

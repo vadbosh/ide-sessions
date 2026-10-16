@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.15.2
+
+- **A path of three components lost its leading `/`.** The DIR column keeps
+  the last three components of a long path and drops the `/` to show the cut.
+  The leading `/` gives awk an empty first field, so `/home/repos/ide-sessions`
+  counted as four components and came out as `home/repos/ide-sessions` with
+  nothing cut. A path of three components or fewer is now shown whole, and a
+  cut one is marked: `.../k8s/WL/PRODS`.
+
 ## 0.15.1
 
 - **`--search` said how many matches, never why.** The ABOUT column showed the
