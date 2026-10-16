@@ -1608,6 +1608,16 @@ out="$(sr_cl --search nginx)"
 contains "search: YOU, AI and TOOLS columns"                  "$out" "TURNS  YOU AI TOOLS"
 contains "search: MATCH replaces ABOUT"                       "$out" "MATCH"
 contains "search: MATCH is the user's latest match"           "$out" "you: first line Nginx at start"
+absent   "search: no colour and no marker in a pipe"           "$out" $'\x1e'
+absent   "search: no escape sequence in a pipe"                "$out" $'\033['
+if command -v script >/dev/null 2>&1; then
+    tty_out="$(CLAUDE_CONFIG_DIR="$SR/claude" CLAUDE_CODE_SESSION_ID='' IDE_SESSIONS_REDACTOR='' \
+        script -qc "stty cols 200; '$ROOT/bin/claude-sessions' --search nginx" /dev/null 2>&1 | tr -d '\r')"
+    contains "search: a terminal gets the match in yellow"      "$tty_out" $'you: first line \033[1;93mNginx\033[0m at start'
+    tty_out="$(NO_COLOR=1 CLAUDE_CONFIG_DIR="$SR/claude" CLAUDE_CODE_SESSION_ID='' IDE_SESSIONS_REDACTOR='' \
+        script -qc "stty cols 200; '$ROOT/bin/claude-sessions' --search nginx" /dev/null 2>&1 | tr -d '\r')"
+    absent   "search: NO_COLOR turns the colour off"            "$tty_out" $'\033[1;93m'
+fi
 absent   "search: a session with tool hits only is hidden"    "$out" "000000000002"
 k4=$(printf '%s\n' "$out" | grep '000000000004')
 absent   "search: a key cut by the snippet edge is not shown"  "$k4" "AKIA"
@@ -1642,7 +1652,7 @@ out="$(sr_cl --search 'n.*?x -t' --all)"
 if [ "$(sr_row "$out" 000000000001)" = 0/0/1 ]; then ok "search: a non-greedy pattern"
 else nope "search: a non-greedy pattern" "$(sr_row "$out" 000000000001)"; fi
 out="$(sr_cl --search 'zzz-nowhere')"
-contains "search: nothing found says so"                      "$out" "No session mentions /zzz-nowhere/"
+contains "search: nothing found says how many were searched"   "$out" "None of 5 session(s) mentions /zzz-nowhere/."
 out="$(sr_cl --search '(')"; rc=$?
 contains "search: a broken pattern is named"                  "$out" "not a regular expression"
 if [ "$rc" -ne 0 ]; then ok "search: a broken pattern exits non-zero"; else nope "search: a broken pattern exits non-zero"; fi

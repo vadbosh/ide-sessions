@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.15.3
+
+- **The matched text in MATCH is bold yellow on a terminal.** It is marked
+  after masking, so the colour can never point at a key. In a pipe or a file
+  the text is plain, and `NO_COLOR` turns the colour off.
+- **An empty search says how many sessions it searched**:
+  `None of 2 session(s) mentions /обновил/.` "No session mentions" read like a
+  failure on a machine with two opencode sessions.
+- **The README puts search first**: a section of its own right after Install,
+  and two pictures, `docs/search.png` and `docs/list.png`, drawn with D2 from
+  the real output of `claude-sessions` over invented sessions.
+
 ## 0.15.2
 
 - **A path of three components lost its leading `/`.** The DIR column keeps

@@ -1017,6 +1017,17 @@ def search_snip(text, rx):
         b -= 1
     return ('…' if a else '') + ' '.join(text[a:b].split()) + ('…' if b < n else '')
 
+# The matches in MATCH come between two separators that bash turns into
+# colour on a terminal and drops anywhere else. They are set after masking, so
+# they can never mark a key; split() in search_snip() already took both
+# characters out of the text itself.
+SEARCH_ON, SEARCH_OFF = '\x1e', '\x1f'
+
+def search_mark(snip, rx):
+    who, sep, rest = snip.partition(': ')
+    return who + sep + rx.sub(
+        lambda m: SEARCH_ON + m.group(0) + SEARCH_OFF if m.group(0) else '', rest)
+
 def search_jsonl(rows, rx, pattern, extra):
     # Hits and the latest snippet of each kind per row, for an IDE that keeps a
     # session in JSONL files: ripgrep picks the lines, search_parts() says
@@ -1088,7 +1099,7 @@ def search_rows(rows_file, pattern, min_hits, show_all, extra):
             out = [(h, r, m) for (h, r, _), m in zip(out, masked)]
     print('#hidden\t%d' % hidden)
     for hits, row, snip in out:
-        print('%s\t%d\t%d\t%d\t%s' % (row, hits[0], hits[1], hits[2], snip))
+        print('%s\t%d\t%d\t%d\t%s' % (row, hits[0], hits[1], hits[2], search_mark(snip, rx)))
 
 # ── SEARCH: this IDE ────────────────────────────────────────────────────────
 def search_count(rows, rx, pattern, extra):
@@ -1532,6 +1543,7 @@ fi
 # --search: one python run over every row. The rows come back with their
 # hits, ordered by them, so -n keeps the best matches rather than the newest.
 if [ -n "$SEARCH" ] && [ -n "$rows" ]; then
+  searched=$(printf '%s\n' "$rows" | grep -c . || true)
   search_in=$(mktemp)
   printf '%s\n' "$rows" > "$search_in"
   out=$(sum_digest --search "$search_in" "$SEARCH" "$MIN_HITS" "$SEARCH_ALL") || { rm -f "$search_in"; exit 1; }
@@ -1540,9 +1552,9 @@ if [ -n "$SEARCH" ] && [ -n "$rows" ]; then
   rows=$(printf '%s\n' "$out" | grep -v '^#hidden' || true)
   if [ -z "$rows" ]; then
     if [ "${hidden:-0}" -gt 0 ]; then
-      echo "No session where you or the model mention /$SEARCH/; $hidden have it only in tool output — add --all to list them."
+      echo "None of $searched session(s) has /$SEARCH/ in your prompts or the model's replies; $hidden session(s) have it only in tool output — add --all to list them."
     else
-      echo "No session mentions /$SEARCH/$( [ "$MIN_HITS" -gt 1 ] && echo " $MIN_HITS or more times")."
+      echo "None of $searched session(s) mentions /$SEARCH/$( [ "$MIN_HITS" -gt 1 ] && echo " $MIN_HITS or more times")."
     fi
     exit 0
   fi
@@ -1818,6 +1830,12 @@ else
   printf "%-30s %-10s %-6s %s%-8s %-11s %s\n" "SESSION ID (full)" "LAST" "MSGS" "$(hits_col YOU AI TOOLS)" "COST" "DATE" "DIR"
 fi
 
+# The matches in MATCH: bold bright yellow on a terminal; nothing in a
+# pipe or with NO_COLOR set.
+hl_on=''; hl_off=''
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then hl_on=$'\033[1;93m'; hl_off=$'\033[0m'; fi
+hl() { local t=${1//$'\x1e'/$hl_on}; printf '%s' "${t//$'\x1f'/$hl_off}"; }
+
 while read_row; do
   [ -z "$sid" ] && continue
   mtime=$(( tupd / 1000 ))
@@ -1825,7 +1843,7 @@ while read_row; do
   date_str=$(date -d "@$mtime" +"%m-%d %H:%M" 2>/dev/null || date -r "$mtime" +"%m-%d %H:%M")
   dir_disp=$(shorten_dir "$directory")
   if [ "$about_any" = 1 ]; then
-    printf "%-30s %-10s %-6s %s\$%-7s %-11s %-${dir_w}s  %s\n" "$sid" "$age" "$msgs" "$(hits_col "${you:-}" "${ai:-}" "${tools:-}")" "$cost" "$date_str" "$dir_disp" "$(about_lines "$about" "$room" "$rest" "$about_pad")"
+    printf "%-30s %-10s %-6s %s\$%-7s %-11s %-${dir_w}s  %s\n" "$sid" "$age" "$msgs" "$(hits_col "${you:-}" "${ai:-}" "${tools:-}")" "$cost" "$date_str" "$dir_disp" "$(hl "$(about_lines "$about" "$room" "$rest" "$about_pad")")"
   else
     printf "%-30s %-10s %-6s %s\$%-7s %-11s %s\n" "$sid" "$age" "$msgs" "$(hits_col "${you:-}" "${ai:-}" "${tools:-}")" "$cost" "$date_str" "$dir_disp"
   fi

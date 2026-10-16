@@ -1,7 +1,7 @@
 # ide-sessions
 
-**Three commands that list, summarize and prune the sessions of Claude Code,
-Codex CLI and opencode — including the one you lost track of.** A fourth,
+**Three commands that list, search, summarize and prune the sessions of Claude
+Code, Codex CLI and opencode — including the one you lost track of.** A fourth,
 `billing`, shows what they cost: per day, week or month across all three, or
 for one session by its id. A fifth, `ide-history`, shows what was said in a
 session — your prompts, or the whole conversation — after the session is gone.
@@ -50,7 +50,7 @@ says otherwise.
 
 ## Why ide-sessions exists
 
-Two problems, one per half of the tool.
+Three problems.
 
 **Where a session actually lives.** Each IDE files a session by its own rule,
 and none of them is the directory you are standing in when you go looking.
@@ -62,6 +62,12 @@ rollout under the date it started, which is a different date from the work when
 a session is resumed. opencode keeps a `directory` column that is easy to
 query, and impossible to see from the CLI. All three listings show the id, the
 directory a session is really bound to, and how recent it is.
+
+**Which session it was.** You remember the subject, not the day and not the
+directory. `--search REGEX` finds the sessions where you or the model talked
+about it, counts the matches in your prompts, the replies and the tool output
+apart, and shows the latest match — no model, no index, just the transcripts on
+disk. See [Search](#search-which-session-worked-on-it).
 
 **What was in it.** Remembering means reading the whole transcript again.
 `--sum` gives back 2-4 bullets per topic — at most five topics for a day, eight
@@ -87,7 +93,63 @@ they found nothing. `billing` also needs [ccusage](https://ccusage.com)
 (`npm install -g ccusage`) and `jq`; the installer says whether they are there,
 and `billing` says how to install them when they are not.
 
+`--search` in `claude-sessions` and `codex-sessions` also needs ripgrep
+(`rg`); the installer says whether it is there.
+
 Uninstall: `./install.sh --uninstall`.
+
+## Search: which session worked on it
+
+[![claude-sessions --search nginx](docs/search.png)](docs/search.png)
+
+`--search REGEX` lists the sessions that mention REGEX. Three columns count
+the matches: YOU in your prompts, AI in the model's replies, TOOLS in its tool
+calls and their output. A word in your own prompts says the work was about it;
+one file the model read can add forty tool matches. So the rows with the most
+matches in your prompts go last, right above the prompt.
+
+MATCH shows the latest match with some words around it: from your prompts if
+there is one, else from a reply, else from a tool. On a terminal the matched
+text is bold yellow; in a pipe or a file it is plain, and `NO_COLOR` turns the
+colour off. The snippet is masked like ABOUT, which it replaces under
+`--search`, and it is cut only between words, so a key is either masked whole
+or not shown.
+
+A session that has the pattern only in tool output is hidden: usually that is
+a file or a command output the model read. One line under the table says how
+many were hidden, and `--all` lists them too. When nothing matches, the answer
+says how many sessions were searched: `None of 2 session(s) mentions /x/.`
+
+```bash
+claude-sessions --search nginx                  # where you or the model mention nginx
+claude-sessions --search nginx -n 10            # the 10 with the most matches in your prompts
+claude-sessions --search nginx --min-hits 20    # 20 matches or more in total
+claude-sessions --search nginx --all            # also the sessions with nginx only in tool output
+claude-sessions -p --search nginx               # this project's sessions only
+claude-sessions k8s --search nginx              # only in directories matching "k8s"
+```
+
+The pattern is a Python regular expression. The case does not matter, and `^`
+and `$` match at every line. Non-greedy `.*?`, `\b`, and lookarounds work as
+in Python:
+
+```bash
+claude-sessions --search 'fluent-?bit|fluentd'
+claude-sessions --search '^\s*server_name'
+claude-sessions --search 'proxy_pass\s+https?://' --min-hits 5
+codex-sessions  --search '(?<=/etc/)nginx'
+```
+
+Text that the assistant adds by itself is not searched: CLAUDE.md, AGENTS.md,
+rules, reminders, skill bodies. A subagent's work counts as tool work of its
+session.
+
+`claude-sessions` and `codex-sessions` need ripgrep (`rg`). Without it,
+`--search` stops and says how to install it. ripgrep finds the lines that can
+match, and Python counts only those. On 500 MB of transcripts the search is no
+slower than the plain listing: it does not compute ABOUT. `opencode-sessions`
+reads one database and does not need ripgrep. `--search` only lists; it does
+not combine with `--rm` and the other delete options.
 
 ## Usage
 
@@ -131,11 +193,7 @@ dry run until `--apply`. The live session is never deleted.
 
 What a long session was about:
 
-```
-$ claude-sessions -p
-    SESSION ID (full)                    LAST       TURNS  DATE        DIR         ABOUT
-*   bdc2f598-3b6a-4e6f-a648-10ba0f1d4360 14s ago    2108   09-11 09:59 /srv/infra  commit: backup: keep seven daily snapshots; edit backup.sh, README.md
-```
+[![claude-sessions -n 4](docs/list.png)](docs/list.png)
 
 A session of 500 turns or more gets an ABOUT line: the subject of its last
 commit and the last three files it edited. Both come from the session's own
@@ -153,54 +211,6 @@ leaves the column 50 characters, the text continues under it. Otherwise it
 continues on the next line, indented, across the whole width. In a pipe it stays
 on one line. Each long session adds about 50 ms: the column reads the last 2 MB
 of its transcript.
-
-Which sessions worked on something:
-
-```
-$ claude-sessions --search nginx -n 3
-    SESSION ID (full)                    LAST       TURNS  YOU AI  TOOLS DATE        DIR        MATCH
-    0e7d5a29-c4b1-4f37-8e66-93b2f05ac8d7 66d ago    1458   0   7   4     08-10 20:47 /srv/cert  ai: …the ingress-nginx annotation is not needed…
-    c93a4f10-2b6e-4e8d-a0f5-7d2c18b6e402 1d ago     4098   21  217 1444  10-14 16:58 /srv/web   you: …move the rate limit from nginx to the app…
-    5b1e07c2-8f3a-4d61-9c2e-1a7d40e9b311 68d ago    1170   49  44  149   08-08 22:10 /srv/logs  you: …why does nginx drop the upstream on reload…
-
-+5 more session(s) have /nginx/ only in tool output — add --all to list them
-YOU / AI / TOOLS: matches in your prompts / the model's replies / its tool calls and their output.
-MATCH: the latest match — from your prompts if there is one, else from a reply, else from a tool.
-```
-
-`--search REGEX` lists the sessions that mention REGEX. Three columns count
-the matches: YOU in your prompts, AI in the model's replies, TOOLS in its tool
-calls and their output. A word in your own prompts says the work was about it;
-one file the model read can add forty tool matches. So the rows with the most
-matches in your prompts go last, right above the prompt. MATCH shows the latest match with some
-words around it: from your prompts if there is one, else from a reply, else
-from a tool. It is masked like ABOUT, which it replaces under `--search`.
-
-A session that has the pattern only in tool output is hidden: usually that is
-a file or a command output the model read. One line under the table says how
-many were hidden, and `--all` lists them too. `--min-hits N` hides the sessions
-with fewer than N matches in total, and `-n` keeps the best rows.
-
-The pattern is a Python regular expression. The case does not matter, and `^`
-and `$` match at every line. Non-greedy `.*?`, `\b`, and lookarounds work as
-in Python:
-
-```bash
-claude-sessions --search 'fluent-?bit'
-claude-sessions --search 'proxy_pass\s+https?://' --min-hits 5
-codex-sessions  --search '(?<=/etc/)nginx'
-```
-
-Text that the assistant adds by itself is not searched: CLAUDE.md, AGENTS.md,
-rules, reminders, skill bodies. A subagent's work counts as tool work of its
-session.
-
-`claude-sessions` and `codex-sessions` need ripgrep (`rg`). Without it,
-`--search` stops and says how to install it. ripgrep finds the lines that can
-match, and Python counts only those. On 500 MB of transcripts the search is
-no slower than the plain listing: it does not compute ABOUT. `opencode-sessions` reads one
-database and does not need ripgrep. `--search` only lists; it does not combine
-with `--rm` and the other delete options.
 
 Summaries:
 
