@@ -443,7 +443,8 @@ user commands.
 Ctrl-Z in Claude Code, or in the editor that Ctrl-G opened for a prompt, stops
 the whole session and returns the terminal to the shell. The session is not
 lost. The shell keeps it as a job, and `fg` in that terminal brings it back.
-No other terminal can run `fg` for it.
+No other terminal can run `fg` for it. If you pressed Ctrl-Z by accident, type
+`fg` in the same terminal. You do not need `claude-procs` for that.
 
 `claude-procs` lists every Claude Code process on the machine and tells you
 what to do with a stopped one:
@@ -463,10 +464,10 @@ PID      TTY     STATE    SESSION   NAME               DIR
 
 ```bash
 claude-procs                   # every claude process: terminal, state, session, directory
-claude-procs fg                # the terminal to type fg in
+claude-procs fg                # tells which terminal to type fg in; does not bring the session back
 claude-procs resume            # end the stopped process, reopen its session in this terminal
 claude-procs resume PID -n     # print what resume would do, change nothing
-claude-procs clean             # the stopped processes that clean would end (dry run)
+claude-procs clean             # the processes that clean would end (dry run)
 claude-procs clean --apply     # end them
 ```
 
@@ -476,6 +477,12 @@ You can leave out the PID when exactly one process is stopped.
 is listed and never gets a signal: idle at its prompt, busy, or the session in
 which you run `claude-procs`. `resume` refuses a running process, because two
 processes on one session overwrite each other.
+
+`clean` ends a process in state `T` whether it has a terminal or not. A running
+process with no terminal (TTY `?`) is not ended. It can be a script's
+`claude -p`, or a session whose terminal was closed, and the two look the same
+from outside. The list marks such a process and shows `kill <PID>`; whether to
+run it is your decision.
 
 The session transcript is already on disk. The only thing that lives in the
 process is the prompt draft open in the editor. So before it ends a process,

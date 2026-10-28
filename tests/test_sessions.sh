@@ -1917,6 +1917,13 @@ contains "claude-procs: the session id comes from sessions/<pid>.json" "$out" "$
 contains "claude-procs: a stale json is ignored, --resume in argv used" "$(printf '%s\n' "$out" | grep "^$P_B ")" "${CP_SID_B:0:8}"
 contains "claude-procs: the prompt draft is shown" "$out" "claude-prompt-a.md"
 contains "claude-procs: a stopped one offers resume" "$out" "claude-procs resume $P_A"
+# The fakes run under setsid with no terminal, as a session whose terminal
+# closed does: the running one is marked and left to the reader.
+contains "claude-procs: a running one with no terminal is marked" "$out" "no terminal"
+contains "claude-procs: ... with kill for the reader to run" "$out" "kill $P_RUN"
+contains "claude-procs: fg on it says there is nothing to bring back" "$("$CP" fg "$P_RUN" 2>&1)" "nothing to bring back"
+contains "claude-procs: --help says clean ends state T only" "$("$CP" --help)" "clean ends the processes in state T"
+absent "claude-procs: --help stops at the header" "$("$CP" --help)" "set -Eeuo"
 
 out="$("$CP" resume 2>&1)"; rc=$?
 [ "$rc" -eq 1 ] && ok "claude-procs: resume with two stopped and no pid refuses" \

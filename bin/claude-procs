@@ -4,14 +4,22 @@
 #
 #   claude-procs                     every claude process: pid, terminal, state,
 #                                    session, directory, and what to do next
-#   claude-procs fg [PID]            where to type `fg` to get a stopped one back
+#   claude-procs fg [PID]            only TELLS which terminal to type `fg` in;
+#                                    it does not bring the session back itself
+#                                    (Ctrl-Z by accident: type `fg` right there)
 #   claude-procs resume [PID]        end a stopped one and reopen its session in
 #                                    THIS terminal (claude --resume <id>)
 #   claude-procs resume [PID] -n     print what resume would do, do nothing
-#   claude-procs clean               the stopped ones that clean would end (dry-run)
+#   claude-procs clean               the processes clean would end (dry-run)
 #   claude-procs clean --apply       end them
 #
 # PID may be left out when exactly one claude process is stopped.
+#
+# clean ends the processes in state T — stopped by Ctrl-Z or SIGSTOP — with or
+# without a terminal. A running process is never ended, even one with no
+# terminal left (TTY ?): that is a script's `claude -p` as often as a session
+# whose terminal was closed, and nothing outside tells the two apart. The list
+# marks it, and `kill <PID>` is yours to run.
 #
 # Why this exists: Ctrl-Z in a Claude Code session — or in the editor it opened
 # with Ctrl-G — stops the whole process group, and the session looks gone. It
@@ -44,7 +52,8 @@ readonly WAIT_SECS="${CLAUDE_PROCS_WAIT:-5}"
 readonly SESSIONS_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions"
 readonly DRAFTS_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/ide-sessions/drafts"
 
-usage() { sed -n '2,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+# The header comment, up to the first line that is not a comment.
+usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"; }
 die()   { printf 'claude-procs: %s\n' "$*" >&2; exit 1; }
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
@@ -215,6 +224,9 @@ show_list() {
             [[ "${P_SHELL[i]}" != gone ]] \
                 && printf '         back in its own terminal: type  fg  in %s\n' "${P_TTY[i]:-its terminal}"
             printf '         reopen it here:               claude-procs resume %s\n' "${P_PID[i]}"
+        elif [[ "${P_TTY[i]:-?}" == "?" ]]; then
+            printf '         no terminal: a script'"'"'s claude -p, or a session whose terminal closed\n'
+            printf '         clean leaves it; if it is the latter, end it yourself: kill %s\n' "${P_PID[i]}"
         fi
     done
     local n=0
@@ -273,8 +285,10 @@ end_proc() {
 cmd_fg() {
     pick fg "${1:-}"
     local pid="${P_PID[IDX]}" tty="${P_TTY[IDX]}"
-    if [[ "${P_STATE[IDX]}" != stopped ]]; then
-        printf 'pid %s is running in %s — switch to that terminal\n' "$pid" "${tty:-its terminal}"
+    if [[ "${P_STATE[IDX]}" != stopped && "${tty:-?}" == "?" ]]; then
+        printf 'pid %s is running with no terminal — nothing to bring back. A lost session: kill %s\n' "$pid" "$pid"
+    elif [[ "${P_STATE[IDX]}" != stopped ]]; then
+        printf 'pid %s is running in %s — switch to that terminal\n' "$pid" "$tty"
     elif [[ "${P_SHELL[IDX]}" == gone ]]; then
         printf 'pid %s is stopped and the shell that ran it is gone — no fg possible.\n' "$pid"
         printf 'reopen it here: claude-procs resume %s\n' "$pid"
@@ -297,7 +311,7 @@ cmd_resume() {
     pick resume "$want"
     local i="$IDX" pid="${P_PID[IDX]}" sid="${P_ID[IDX]}" cwd="${P_CWD[IDX]}"
     [[ "${P_STATE[i]}" == stopped ]] \
-        || die "pid $pid is running in ${P_TTY[i]:-a terminal} — two processes on one session overwrite each other. Use that one."
+        || die "pid $pid is running (terminal ${P_TTY[i]:-?}) — two processes on one session overwrite each other. Use that one."
     [[ -n "$sid" ]] || die "pid $pid: session id unknown (no sessions/$pid.json, no --resume) — find it with claude-sessions -p"
     [[ -d "$cwd" ]] || die "pid $pid: its directory '$cwd' is gone"
 

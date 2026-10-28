@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.17.1
+
+- **`claude-procs --help` says what `clean` ends.** It ends a process in state
+  `T`, stopped by Ctrl-Z or SIGSTOP, with or without a terminal. A running
+  process is never ended, even when it has no terminal.
+- **A running process with no terminal is marked in the list.** TTY `?` can
+  be a script's `claude -p` or a session whose terminal was closed, and the
+  two look the same from outside. The list says so and shows `kill <PID>` for
+  you to run. `claude-procs fg` on such a process says there is nothing to
+  bring back.
+- **`claude-procs fg` does not bring the session back.** The help and the
+  README now say that it only names the terminal to type `fg` in. After an
+  accidental Ctrl-Z, type `fg` in the same terminal.
+- `--help` prints the whole header comment and stops before the code. Before,
+  it printed a fixed range of lines.
+
 ## 0.17.0
 
 - **New command `claude-procs`: a Claude Code session stopped by Ctrl-Z.**
