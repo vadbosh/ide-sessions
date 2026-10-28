@@ -1983,8 +1983,18 @@ if command -v script >/dev/null 2>&1; then
     sleep 0.3
     ts="$(cat "$TMP/cp/typescript")"
     contains "claude-procs: fg sets the tab title" "$ts" "[STOPPED] claude"
-    contains "claude-procs: fg prints a line in the window" "$ts" "is stopped in this terminal — type  fg"
-    contains "claude-procs: the list points at fg for the mark" "$("$CP" 2>&1)" "mark its tab: claude-procs fg $P_M"
+    contains "claude-procs: fg prints a line in the window" "$ts" "is stopped in this terminal. Type:"
+    contains "claude-procs: ... with fg on a key-like background" "$ts" $'\e[1;97;44m fg \e[0m'
+    out="$("$CP" 2>&1)"
+    contains "claude-procs: the list says what to type in that terminal" "$out" "type:"
+    contains "claude-procs: the list points at fg for the mark" "$out" "claude-procs fg $P_M"
+    absent "claude-procs: no colour in a pipe" "$out" $'\e['
+    # On a terminal every command to type sits on the blue key background.
+    out="$(script -qec "$CP" /dev/null 2>&1)"
+    contains "claude-procs: on a terminal fg is a key" "$out" $'\e[1;97;44m fg \e[0m'
+    contains "claude-procs: on a terminal resume is a key" "$out" $'\e[1;97;44m claude-procs resume '"$P_M"$' \e[0m'
+    out="$(NO_COLOR=1 script -qec "$CP" /dev/null 2>&1)"
+    absent "claude-procs: NO_COLOR on a terminal has no key background" "$out" $'\e[1;97;44m'
     kill -KILL -- "-$M_SHELL" 2>/dev/null
     gone "$P_M" || nope "claude-procs: the pty fake is gone after the test"
 else

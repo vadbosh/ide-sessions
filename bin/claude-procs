@@ -61,9 +61,18 @@ die()   { printf 'claude-procs: %s\n' "$*" >&2; exit 1; }
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
     C_ID=$'\033[92m'; C_DIR=$'\033[96m'; C_STOP=$'\033[93m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
+    C_CMD=$'\033[1;97;44m'
 else
-    C_ID=''; C_DIR=''; C_STOP=''; C_DIM=''; C_OFF=''
+    C_ID=''; C_DIR=''; C_STOP=''; C_DIM=''; C_OFF=''; C_CMD=''
 fi
+# A command for the reader to type by hand: bold white on blue, a space on each
+# side, like a key — no other field uses a background, so it cannot be taken
+# for part of the text. Without colour it stays where the eye expects it: at
+# the end of the line, after a colon, in one column.
+readonly KEY_ON=$'\033[1;97;44m' KEY_OFF=$'\033[0m'
+type_cmd() { printf '%s%s%s' "${C_CMD:+$C_CMD }" "$1" "${C_CMD:+ $C_OFF}"; }
+# hint LABEL COMMAND — one indented line: what it does, then what to type.
+hint() { printf '         %-22s %s\n' "$1" "$(type_cmd "$2")"; }
 
 # ── reading a process ───────────────────────────────────────────────────────
 
@@ -225,18 +234,19 @@ show_list() {
             "${P_MINE[i]:+  (this session)}"
         [[ -n "${P_DRAFT[i]}" ]] && printf '         %sprompt draft: %s%s\n' "$C_DIM" "${P_DRAFT[i]}" "$C_OFF"
         if [[ "${P_STATE[i]}" == stopped ]]; then
-            [[ "${P_SHELL[i]}" != gone ]] \
-                && printf '         back in its own terminal: type  fg  in %s — mark its tab: claude-procs fg %s\n' \
-                          "${P_TTY[i]:-its terminal}" "${P_PID[i]}"
-            printf '         reopen it here:               claude-procs resume %s\n' "${P_PID[i]}"
+            if [[ "${P_SHELL[i]}" != gone ]]; then
+                hint "in ${P_TTY[i]:-its terminal} type:" "fg"
+                hint "which tab is ${P_TTY[i]:-it}:" "claude-procs fg ${P_PID[i]}"
+            fi
+            hint "or reopen it here:" "claude-procs resume ${P_PID[i]}"
         elif [[ "${P_TTY[i]:-?}" == "?" ]]; then
             printf '         no terminal: a script'"'"'s claude -p, or a session whose terminal closed\n'
-            printf '         clean leaves it; if it is the latter, end it yourself: kill %s\n' "${P_PID[i]}"
+            hint "clean leaves it; lost?" "kill ${P_PID[i]}"
         fi
     done
     local n=0
     for i in "${P_STATE[@]}"; do [[ "$i" == stopped ]] && n=$((n + 1)); done
-    [[ $n -gt 0 ]] && printf '\n%d stopped — end them all: claude-procs clean --apply\n' "$n"
+    [[ $n -gt 0 ]] && printf '\n%d stopped — end them all: %s\n' "$n" "$(type_cmd 'claude-procs clean --apply')"
     return 0
 }
 
@@ -304,8 +314,8 @@ mark_terminal() {
         printf '(not marked: %s is busy with another program — %s)\n' "$tty" "${fgp:-pid $ST_TPGID}"
         return 1
     fi
-    printf '\033]0;[STOPPED] claude %s — type fg\007\a\r\n*** claude-procs: Claude Code session %s (%s) is stopped in this terminal — type  fg  ***\r\n' \
-        "$label" "${P_ID[i]:0:8}" "${P_NAME[i]:--}" > "/dev/$tty"
+    printf '\033]0;[STOPPED] claude %s — type fg\007\a\r\n*** claude-procs: Claude Code session %s (%s) is stopped in this terminal. Type: %s fg %s ***\r\n' \
+        "$label" "${P_ID[i]:0:8}" "${P_NAME[i]:--}" "$KEY_ON" "$KEY_OFF" > "/dev/$tty"
     printf 'marked %s: tab title "[STOPPED] claude %s — type fg", a bell and a line in the window\n' "$tty" "$label"
 }
 
@@ -322,16 +332,18 @@ cmd_fg() {
     pick fg "$want"
     local pid="${P_PID[IDX]}" tty="${P_TTY[IDX]}"
     if [[ "${P_STATE[IDX]}" != stopped && "${tty:-?}" == "?" ]]; then
-        printf 'pid %s is running with no terminal — nothing to bring back. A lost session: kill %s\n' "$pid" "$pid"
+        printf 'pid %s is running with no terminal — nothing to bring back.\n' "$pid"
+        printf 'a lost session? end it: %s\n' "$(type_cmd "kill $pid")"
     elif [[ "${P_STATE[IDX]}" != stopped ]]; then
         printf 'pid %s is running in %s — switch to that terminal\n' "$pid" "$tty"
     elif [[ "${P_SHELL[IDX]}" == gone ]]; then
         printf 'pid %s is stopped and the shell that ran it is gone — no fg possible.\n' "$pid"
-        printf 'reopen it here: claude-procs resume %s\n' "$pid"
+        printf 'reopen it here: %s\n' "$(type_cmd "claude-procs resume $pid")"
     else
         [[ $mark -eq 1 ]] && { mark_terminal "$IDX" || true; }
-        printf 'in the terminal on %s, type:\n\n    fg\n\n' "${tty:-?}"
-        printf 'several jobs there: jobs, then fg %%N.  That terminal lost: claude-procs resume %s\n' "$pid"
+        printf 'in the terminal %s, type:\n\n    %s\n\n' "${tty:-?}" "$(type_cmd fg)"
+        printf 'several jobs there: %s, then %s\n' "$(type_cmd jobs)" "$(type_cmd 'fg %N')"
+        printf 'that terminal lost:  %s\n' "$(type_cmd "claude-procs resume $pid")"
     fi
 }
 
@@ -400,7 +412,7 @@ cmd_clean() {
     if [[ $n -eq 0 ]]; then
         printf 'no stopped %s process — nothing to clean\n' "$COMM"
     elif [[ $apply -eq 0 ]]; then
-        printf '\n%d stopped, running ones untouched. Dry run — end them: claude-procs clean --apply\n' "$n"
+        printf '\n%d stopped, running ones untouched. Dry run — end them: %s\n' "$n" "$(type_cmd 'claude-procs clean --apply')"
         printf 'their sessions stay on disk: claude --resume <id> reopens any of them later\n'
     fi
 }

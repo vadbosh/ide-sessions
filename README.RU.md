@@ -463,12 +463,19 @@ PID      TTY     STATE    SESSION   NAME               DIR
 1372842  pts/0   running  205e6433  infra-04           /srv/infra
 1529592  pts/3   stopped  63e9736c  app-2c             /srv/app
          prompt draft: /tmp/claude-0/claude-prompt-fe0c01da-e316-40af-a6aa-407a6fca7c3e.md
-         back in its own terminal: type  fg  in pts/3 — mark its tab: claude-procs fg 1529592
-         reopen it here:               claude-procs resume 1529592
+         in pts/3 type:         fg
+         which tab is pts/3:    claude-procs fg 1529592
+         or reopen it here:     claude-procs resume 1529592
 1533761  pts/4   running  0db314eb  infra-f8           /srv/infra  (this session)
 
 1 stopped — end them all: claude-procs clean --apply
 ```
+
+Всё, что нужно набрать руками, — `fg`, `claude-procs fg 1529592`,
+`claude-procs resume 1529592`, `claude-procs clean --apply` — напечатано жирным
+белым на синем фоне, как клавиша. Фона больше нет ни у одного поля, так что
+команду не спутать с частью фразы. В pipe и при `NO_COLOR` цвета нет, а команды
+стоят одной колонкой после двоеточия.
 
 ```bash
 claude-procs                   # все процессы claude: терминал, состояние, сессия, каталог

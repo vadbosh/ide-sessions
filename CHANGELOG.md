@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.18.1
+
+- **`claude-procs`: a command to type by hand looks like a key.** In
+  `type  fg  in pts/3` the `fg` was lost in the sentence. Every command in the
+  hints — `fg`, `claude-procs fg <PID>`, `claude-procs resume <PID>`,
+  `claude-procs clean --apply`, `kill <PID>`, `jobs` — is now bold white on a
+  blue background, with a space on each side. No other field has a
+  background. Each hint is one line: what it does, a colon, the command, and
+  the commands of one session stand in one column. The line that `fg` prints
+  in the stopped session's own window shows `fg` the same way. In a pipe or
+  with `NO_COLOR` there is no colour.
+
 ## 0.18.0
 
 - **`claude-procs fg` marks the terminal of a stopped session.** `pts/3` is a
