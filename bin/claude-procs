@@ -4,9 +4,12 @@
 #
 #   claude-procs                     every claude process: pid, terminal, state,
 #                                    session, directory, and what to do next
-#   claude-procs fg [PID]            only TELLS which terminal to type `fg` in;
-#                                    it does not bring the session back itself
+#   claude-procs fg [PID]            MARKS the terminal to type `fg` in: its tab
+#                                    title becomes "[STOPPED] claude … — type fg",
+#                                    it rings the bell and prints a line there.
+#                                    It does not bring the session back itself
 #                                    (Ctrl-Z by accident: type `fg` right there)
+#   claude-procs fg [PID] --no-mark  only name the terminal, write nothing to it
 #   claude-procs resume [PID]        end a stopped one and reopen its session in
 #                                    THIS terminal (claude --resume <id>)
 #   claude-procs resume [PID] -n     print what resume would do, do nothing
@@ -73,7 +76,8 @@ proc_stat() {
     raw="${raw##*) }"
     local -a f
     read -ra f <<<"$raw"
-    ST_STATE="${f[0]}" ST_PPID="${f[1]}" ST_PGRP="${f[2]}" ST_SID="${f[3]}" ST_START="${f[19]}"
+    ST_STATE="${f[0]}" ST_PPID="${f[1]}" ST_PGRP="${f[2]}" ST_SID="${f[3]}" ST_TPGID="${f[5]}"
+    ST_START="${f[19]}"
 }
 
 alive() {
@@ -222,7 +226,8 @@ show_list() {
         [[ -n "${P_DRAFT[i]}" ]] && printf '         %sprompt draft: %s%s\n' "$C_DIM" "${P_DRAFT[i]}" "$C_OFF"
         if [[ "${P_STATE[i]}" == stopped ]]; then
             [[ "${P_SHELL[i]}" != gone ]] \
-                && printf '         back in its own terminal: type  fg  in %s\n' "${P_TTY[i]:-its terminal}"
+                && printf '         back in its own terminal: type  fg  in %s — mark its tab: claude-procs fg %s\n' \
+                          "${P_TTY[i]:-its terminal}" "${P_PID[i]}"
             printf '         reopen it here:               claude-procs resume %s\n' "${P_PID[i]}"
         elif [[ "${P_TTY[i]:-?}" == "?" ]]; then
             printf '         no terminal: a script'"'"'s claude -p, or a session whose terminal closed\n'
@@ -282,8 +287,39 @@ end_proc() {
 
 # ── commands ────────────────────────────────────────────────────────────────
 
+# mark_terminal IDX — makes the terminal of a stopped session findable from the
+# outside: pts/3 is a name the server knows and the tab bar on the reader's
+# machine does not. It sets the tab title, rings the bell (most terminals flag
+# the tab) and prints one line. Only when the shell owns the terminal (its
+# foreground group is the shell's): at a prompt, a line costs nothing; over a
+# program that draws the screen — vim, another claude — it would garble it.
+mark_terminal() {
+    local i="$1" tty="${P_TTY[$1]}" shell="${P_SHELL[$1]}" label
+    label="${P_NAME[i]:-${P_ID[i]:0:8}}"
+    [[ -w "/dev/$tty" ]] || { printf '(cannot write to /dev/%s — not marked)\n' "$tty"; return 1; }
+    proc_stat "$shell" || return 1
+    if [[ "$ST_TPGID" != "$ST_PGRP" ]]; then
+        local fgp
+        fgp="$(ps -o args= -p "$ST_TPGID" 2>/dev/null | cut -c1-60)"
+        printf '(not marked: %s is busy with another program — %s)\n' "$tty" "${fgp:-pid $ST_TPGID}"
+        return 1
+    fi
+    printf '\033]0;[STOPPED] claude %s — type fg\007\a\r\n*** claude-procs: Claude Code session %s (%s) is stopped in this terminal — type  fg  ***\r\n' \
+        "$label" "${P_ID[i]:0:8}" "${P_NAME[i]:--}" > "/dev/$tty"
+    printf 'marked %s: tab title "[STOPPED] claude %s — type fg", a bell and a line in the window\n' "$tty" "$label"
+}
+
 cmd_fg() {
-    pick fg "${1:-}"
+    local want="" mark=1
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --no-mark) mark=0 ;;
+            -*) die "fg: unknown option $1" ;;
+            *) want="$1" ;;
+        esac
+        shift
+    done
+    pick fg "$want"
     local pid="${P_PID[IDX]}" tty="${P_TTY[IDX]}"
     if [[ "${P_STATE[IDX]}" != stopped && "${tty:-?}" == "?" ]]; then
         printf 'pid %s is running with no terminal — nothing to bring back. A lost session: kill %s\n' "$pid" "$pid"
@@ -293,6 +329,7 @@ cmd_fg() {
         printf 'pid %s is stopped and the shell that ran it is gone — no fg possible.\n' "$pid"
         printf 'reopen it here: claude-procs resume %s\n' "$pid"
     else
+        [[ $mark -eq 1 ]] && { mark_terminal "$IDX" || true; }
         printf 'in the terminal on %s, type:\n\n    fg\n\n' "${tty:-?}"
         printf 'several jobs there: jobs, then fg %%N.  That terminal lost: claude-procs resume %s\n' "$pid"
     fi

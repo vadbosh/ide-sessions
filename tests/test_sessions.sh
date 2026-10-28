@@ -1964,6 +1964,33 @@ out="$("$CP" clean 2>&1)"
 contains "claude-procs: nothing stopped, nothing to clean" "$out" "nothing to clean"
 kill -- "-$P_RUN" 2>/dev/null
 
+# fg marks the terminal: a real pty from script(1), a shell at its "prompt"
+# (the shell owns the terminal), a fake stopped inside it. What fg writes to
+# the terminal lands in the typescript.
+if command -v script >/dev/null 2>&1; then
+    echo "draft m" > "$TMP/cp/prompts/claude-prompt-m.md"
+    CP_PIDFILE="$TMP/cp/m.pid" CP_DRAFT="$TMP/cp/prompts/claude-prompt-m.md" \
+        script -qfec "bash -c '\"$TMP/cp/bin/$CP_COMM\" --resume $CP_SID_A & wait'" "$TMP/cp/typescript" \
+        </dev/null >/dev/null 2>&1 &
+    for i in $(seq 50); do [ -s "$TMP/cp/m.pid" ] && break; sleep 0.1; done
+    P_M="$(cat "$TMP/cp/m.pid")"
+    M_SHELL="$(ps -o sid= -p "$P_M" | tr -d ' ')"
+    kill -STOP "$P_M"; sleep 0.2
+    out="$("$CP" fg "$P_M" --no-mark 2>&1)"
+    absent "claude-procs: fg --no-mark writes nothing" "$out" "marked"
+    out="$("$CP" fg "$P_M" 2>&1)"
+    contains "claude-procs: fg reports the mark" "$out" "marked pts/"
+    sleep 0.3
+    ts="$(cat "$TMP/cp/typescript")"
+    contains "claude-procs: fg sets the tab title" "$ts" "[STOPPED] claude"
+    contains "claude-procs: fg prints a line in the window" "$ts" "is stopped in this terminal — type  fg"
+    contains "claude-procs: the list points at fg for the mark" "$("$CP" 2>&1)" "mark its tab: claude-procs fg $P_M"
+    kill -KILL -- "-$M_SHELL" 2>/dev/null
+    gone "$P_M" || nope "claude-procs: the pty fake is gone after the test"
+else
+    echo "  skip claude-procs fg marking: no script(1)"
+fi
+
 # ── report ──────────────────────────────────────────────────────────────────
 echo
 echo "$PASS passed, $FAIL failed"

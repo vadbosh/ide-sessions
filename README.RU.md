@@ -463,7 +463,7 @@ PID      TTY     STATE    SESSION   NAME               DIR
 1372842  pts/0   running  205e6433  infra-04           /srv/infra
 1529592  pts/3   stopped  63e9736c  app-2c             /srv/app
          prompt draft: /tmp/claude-0/claude-prompt-fe0c01da-e316-40af-a6aa-407a6fca7c3e.md
-         back in its own terminal: type  fg  in pts/3
+         back in its own terminal: type  fg  in pts/3 — mark its tab: claude-procs fg 1529592
          reopen it here:               claude-procs resume 1529592
 1533761  pts/4   running  0db314eb  infra-f8           /srv/infra  (this session)
 
@@ -472,7 +472,8 @@ PID      TTY     STATE    SESSION   NAME               DIR
 
 ```bash
 claude-procs                   # все процессы claude: терминал, состояние, сессия, каталог
-claude-procs fg                # подсказывает, в каком терминале набрать fg; сам сессию не возвращает
+claude-procs fg                # пометить терминал, где набрать fg; сам сессию не возвращает
+claude-procs fg PID --no-mark  # только назвать этот терминал, ничего в него не писать
 claude-procs resume            # завершить остановленный процесс и открыть его сессию в этом терминале
 claude-procs resume PID -n     # показать, что сделает resume, ничего не меняя
 claude-procs clean             # какие процессы завершит clean (пробный прогон)
@@ -480,6 +481,29 @@ claude-procs clean --apply     # завершить их
 ```
 
 PID можно не указывать, если остановлен ровно один процесс.
+
+### Какое окно — pts/3
+
+`pts/3` — имя терминала на сервере. Вкладки на вашей машине его не показывают,
+поэтому `claude-procs fg` помечает терминал сам. Он ставит вкладке заголовок
+`[STOPPED] claude <name> — type fg`, подаёт звуковой сигнал (многие терминалы
+отмечают от него вкладку) и печатает строку в окне. Пишет он, только если
+терминалом владеет shell, и тогда строка попадает к приглашению shell. Если там
+экран рисует другая программа, например vim или ещё один claude, строка бы его
+испортила: тогда `claude-procs fg` называет эту программу и ничего не пишет.
+
+Чтобы терминал был виден в каждом приглашении, добавьте модуль в
+`~/.config/starship.toml`. Starship передаёт команду модулю через stdin, и `tty`
+в ней ответит «not a tty», поэтому модуль читает stdin самого starship:
+
+```toml
+[custom.tty]
+command = 't=$(readlink /proc/$PPID/fd/0); case "$t" in /dev/pts/*) echo "${t#/dev/}" ;; esac'
+when = true
+format = "[$output ]($style)"
+```
+
+Затем вставьте `${custom.tty}` в `format`, например после `$hostname`.
 
 `resume` и `clean` завершают только остановленный процесс (состояние `T`).
 Работающий процесс попадает в список, но сигнал не получает никогда — ждёт ли он

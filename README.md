@@ -455,7 +455,7 @@ PID      TTY     STATE    SESSION   NAME               DIR
 1372842  pts/0   running  205e6433  infra-04           /srv/infra
 1529592  pts/3   stopped  63e9736c  app-2c             /srv/app
          prompt draft: /tmp/claude-0/claude-prompt-fe0c01da-e316-40af-a6aa-407a6fca7c3e.md
-         back in its own terminal: type  fg  in pts/3
+         back in its own terminal: type  fg  in pts/3 — mark its tab: claude-procs fg 1529592
          reopen it here:               claude-procs resume 1529592
 1533761  pts/4   running  0db314eb  infra-f8           /srv/infra  (this session)
 
@@ -464,7 +464,8 @@ PID      TTY     STATE    SESSION   NAME               DIR
 
 ```bash
 claude-procs                   # every claude process: terminal, state, session, directory
-claude-procs fg                # tells which terminal to type fg in; does not bring the session back
+claude-procs fg                # mark the terminal to type fg in; does not bring the session back
+claude-procs fg PID --no-mark  # only name that terminal, write nothing to it
 claude-procs resume            # end the stopped process, reopen its session in this terminal
 claude-procs resume PID -n     # print what resume would do, change nothing
 claude-procs clean             # the processes that clean would end (dry run)
@@ -472,6 +473,30 @@ claude-procs clean --apply     # end them
 ```
 
 You can leave out the PID when exactly one process is stopped.
+
+### Which window is pts/3
+
+`pts/3` is a name on the server. The tab bar on your machine does not show it,
+so `claude-procs fg` marks the terminal itself. It sets the tab title to
+`[STOPPED] claude <name> — type fg` and prints one line in the window. It also
+rings the bell, and many terminals then put a mark on the tab. It writes only
+when the shell owns that terminal, so the line lands at a shell prompt.
+Another program there, for example vim or another claude, draws the whole
+screen, and the line would garble it. Then `claude-procs fg` names that
+program and writes nothing.
+
+To see the terminal in every prompt, add a custom module to
+`~/.config/starship.toml`. Starship passes the command through stdin, so `tty`
+in it prints "not a tty"; the module reads starship's own stdin instead:
+
+```toml
+[custom.tty]
+command = 't=$(readlink /proc/$PPID/fd/0); case "$t" in /dev/pts/*) echo "${t#/dev/}" ;; esac'
+when = true
+format = "[$output ]($style)"
+```
+
+Then put `${custom.tty}` in `format`, for example after `$hostname`.
 
 `resume` and `clean` end only a stopped process (state `T`). A running process
 is listed and never gets a signal: idle at its prompt, busy, or the session in

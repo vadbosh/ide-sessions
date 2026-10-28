@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.18.0
+
+- **`claude-procs fg` marks the terminal of a stopped session.** `pts/3` is a
+  name on the server, and the tab bar on your machine does not show it. `fg`
+  now sets the tab title to `[STOPPED] claude <name> — type fg`, rings the
+  bell and prints one line in that window. It writes only when the shell owns
+  the terminal. If another program draws the screen there, `fg` names that
+  program and writes nothing. `--no-mark` only names the terminal. The list
+  points at `claude-procs fg <PID>` next to each stopped session.
+- The README shows a starship custom module that puts the terminal (`pts/3`)
+  in every prompt.
+
 ## 0.17.1
 
 - **`claude-procs --help` says what `clean` ends.** It ends a process in state
