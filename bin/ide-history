@@ -801,6 +801,26 @@ def write_file(lines):
 # or into an assistant's reply through /history — it is plain text.
 YELLOW = sys.stdout.isatty() and not os.environ.get('NO_COLOR')
 
+# The same terminal-only colours as the *-sessions listings: a session id
+# bright green, a directory bright cyan. Never in the file, never in a pipe.
+ID, DIR = '92', '96'
+
+
+def paint(code, s):
+    return '\033[%sm%s\033[0m' % (code, s) if YELLOW and s else s
+
+
+# A listing row starts `YYYY-MM-DD HH:MM  ide  id  [dir]  `. Painted after the
+# masking, so the redactor sees the text exactly as before.
+HEAD = re.compile(r'^(\d{4}-\d\d-\d\d \d\d:\d\d  \S+ +)(\S+)( +)\[([^\]\n]*)\]', re.M)
+
+
+def paint_heads(text):
+    if not YELLOW:
+        return text
+    return HEAD.sub(lambda m: '%s%s%s[%s]' % (m.group(1), paint(ID, m.group(2)), m.group(3),
+                                               paint(DIR, m.group(4))), text)
+
 
 def footer(lines, file_line, gap=True):
     if gap:
@@ -959,9 +979,9 @@ def one_session(ide, sid, how):
     shown = cap(rows)
     first, last = records[-len(shown)]['ep'], records[-1]['ep']
     print(scrub(redact('\n'.join(shown))))
-    footer(['Prompts of one session · %s · %s%s' % (NAME[ide], sid,
+    footer(['Prompts of one session · %s · %s%s' % (NAME[ide], paint(ID, sid),
             '' if how == 'by id' else ' (%s)' % how),
-            '%s · from the %s' % (project_of(ide, sid, records) or '?', source),
+            '%s · from the %s' % (paint(DIR, project_of(ide, sid, records) or '?'), source),
             counted(len(shown), len(rows), 'prompts', when(first), when(last))],
            'Uncapped: %s' % OUTFILE)
 
@@ -979,7 +999,7 @@ def listing(title, records, noun):
     write_file([h + indent(r['text'], ' ' * 18) for h, r in zip(head, records)])
     rows = [h + flat(r['text']) for h, r in zip(head, records)]
     shown = cap(rows)
-    print(scrub(redact('\n'.join(shown))))
+    print(paint_heads(scrub(redact('\n'.join(shown)))))
     footer(['%s · %s' % (title, scope()),
             counted(len(shown), len(rows), noun, when(records[-len(shown)]['ep']), when(records[-1]['ep']))],
            'Uncapped: %s' % OUTFILE)
@@ -1014,7 +1034,10 @@ def sessions():
              a['ide'], a['n'], a['session'], a['project'] or '?') for a in rows]
     write_file(lines)
     shown = cap(lines)
-    print('\n'.join(shown))
+    painted = ['%s … %s  %-8s n=%-4d %s  [%s]' % (when(a['first']), when(a['last']),
+               a['ide'], a['n'], paint(ID, a['session']), paint(DIR, a['project'] or '?'))
+               for a in rows]
+    print('\n'.join(cap(painted)))
     footer(['Sessions with prompts · %s · newest last' % scope(),
             counted(len(shown), len(lines), 'sessions', when(rows[-len(shown)]['last']),
                     when(rows[-1]['last']))],

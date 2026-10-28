@@ -1543,6 +1543,34 @@ format_age() {
   fi
 }
 
+# The fields every listing shares get one colour each, on a terminal only (as
+# rg does; NO_COLOR turns it off): the session id bright green, the directory
+# bright cyan, and a long session's count bright yellow. Colour goes around the
+# field already padded, so the columns stay where they were.
+c_id=''; c_dir=''; c_hot=''; c_off=''
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  c_id=$'\033[92m'; c_dir=$'\033[96m'; c_hot=$'\033[93m'; c_off=$'\033[0m'
+fi
+TURNS_HOT=1000  # turns
+# Set by cell and hot below, through printf -v.
+t_c=""; sid_s=""; n_s=""; dir_s=""
+
+# cell VAR COLOUR WIDTH TEXT: TEXT padded to WIDTH (0: not padded), then
+# coloured, into VAR. printf -v rather than $(…): no subshell per field per row.
+cell() {
+  local _p
+  if [ "$3" -gt 0 ]; then printf -v _p "%-${3}s" "$4"; else _p=$4; fi
+  if [ -n "$2" ]; then printf -v "$1" '%s%s%s' "$2" "$_p" "$c_off"; else printf -v "$1" '%s' "$_p"; fi
+}
+
+# hot VAR N: the colour for a count of N — yellow above TURNS_HOT, else none.
+hot() {
+  printf -v "$1" '%s' ''
+  case "$2" in ''|*[!0-9]*) return 0 ;; esac
+  if [ "$2" -gt "$TURNS_HOT" ]; then printf -v "$1" '%s' "$c_hot"; fi
+  return 0
+}
+
 shorten_dir() {
   local p="$1"
   [ "$FULL_PATH" = 1 ] && { echo "$p"; return; }
@@ -1658,8 +1686,10 @@ if [ "$DELETE_MODE" = 1 ]; then
     date_str=$(date -d "@$mtime" +"%m-%d %H:%M" 2>/dev/null || date -r "$mtime" +"%m-%d %H:%M")
     note=""
     if [ "${agents:-0}" -gt 0 ]; then note="  +$agents agents"; fi
-    printf "%-38s %-10s %-6s %-11s %s%s\n" \
-      "$sid" "$(format_age "$mtime")" "$turns" "$date_str" "$(shorten_dir "$cwd")" "$note"
+    hot t_c "$turns"
+    cell sid_s "$c_id" 38 "$sid"; cell n_s "$t_c" 6 "$turns"; cell dir_s "$c_dir" 0 "$(shorten_dir "$cwd")"
+    printf "%s %-10s %s %-11s %s%s\n" \
+      "$sid_s" "$(format_age "$mtime")" "$n_s" "$date_str" "$dir_s" "$note"
     # A cached summary outlives the session it describes unless it goes too.
     for path in "$fpath" "$SUM_CACHE/codex-$sid.md" "$SUM_CACHE/codex-$sid.orig.md"; do
       if [ -e "$path" ]; then printf '%s\n' "$path" >> "$paths_file"; fi
@@ -1829,10 +1859,13 @@ while read_row; do
   age=$(format_age "$mtime")
   date_str=$(date -d "@$mtime" +"%m-%d %H:%M" 2>/dev/null || date -r "$mtime" +"%m-%d %H:%M")
   dir_disp=$(shorten_dir "$cwd")
+  hot t_c "$turns"; cell sid_s "$c_id" 38 "$sid"; cell n_s "$t_c" 6 "$turns"
   if [ "$about_any" = 1 ]; then
-    printf "%-38s %-10s %-6s %s%-11s %-${dir_w}s  %s\n" "$sid" "$age" "$turns" "$(hits_col "${you:-}" "${ai:-}" "${tools:-}")" "$date_str" "$dir_disp" "$(hl "$(about_cell "$about")")"
+    cell dir_s "$c_dir" "$dir_w" "$dir_disp"
+    printf "%s %-10s %s %s%-11s %s  %s\n" "$sid_s" "$age" "$n_s" "$(hits_col "${you:-}" "${ai:-}" "${tools:-}")" "$date_str" "$dir_s" "$(hl "$(about_cell "$about")")"
   else
-    printf "%-38s %-10s %-6s %s%-11s %s\n" "$sid" "$age" "$turns" "$(hits_col "${you:-}" "${ai:-}" "${tools:-}")" "$date_str" "$dir_disp"
+    cell dir_s "$c_dir" 0 "$dir_disp"
+    printf "%s %-10s %s %s%-11s %s\n" "$sid_s" "$age" "$n_s" "$(hits_col "${you:-}" "${ai:-}" "${tools:-}")" "$date_str" "$dir_s"
   fi
 done <<< "$rows"
 

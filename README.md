@@ -172,6 +172,12 @@ claude-sessions -p --rm-all --apply          # DELETES every session of this pro
 claude-sessions k8s --rm-all                 # lists what that would take, in every dir matching k8s
 ```
 
+On a terminal every listing colours three fields: the session id bright
+green, the directory bright cyan, and the number of turns bright yellow above
+1000 (in opencode, messages above 100). The same colours mark the session id
+and the directory in `ide-history` and the session id in `billing --id`. In a
+pipe or a file there is no colour, and `NO_COLOR` turns it off.
+
 Every bulk form lists first and deletes only with `--apply`. The examples in
 `--help` spell out which is which, because "older than 30 days" describes a
 selection and says nothing about what happens to it.

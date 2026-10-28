@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.16.0
+
+- **Colour on a terminal.** Every listing of `claude-sessions`,
+  `codex-sessions` and `opencode-sessions` — the plain one, `-p`, `--search`
+  and the list shown before a delete — prints the session id bright green, the
+  directory bright cyan, and the number of turns bright yellow above 1000
+  (opencode: messages above 100, where one message is a whole turn). The colour
+  goes around the field already padded, so the columns do not move.
+  `ide-history` paints the session id and the directory the same way, after
+  masking; its `Uncapped` file stays plain. `billing --id` paints the session
+  id. In a pipe or a file there is no colour, and `NO_COLOR` turns it off. The
+  README pictures are redrawn with it.
+
 ## 0.15.5
 
 - **In a narrow terminal ABOUT and MATCH start whole on the next line.** With

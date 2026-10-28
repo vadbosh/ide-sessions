@@ -1709,6 +1709,82 @@ else
     nope "search: the three copies of the shared part are identical"
 fi
 
+# ── colours ─────────────────────────────────────────────────────────────────
+# On a terminal: the session id bright green, the directory bright cyan, a long
+# session's count bright yellow (above 1000 turns; above 100 messages in
+# opencode). In a pipe and under NO_COLOR, not one escape — and the columns
+# are where they were without colour.
+echo "colours"
+
+CO="$TMP/colours"
+mkdir -p "$CO/claude/projects/-srv-web" "$CO/oc"
+python3 - "$CO" <<'PY'
+import json, sqlite3, sys
+co = sys.argv[1]
+P = co + "/claude/projects/-srv-web/"
+line = json.dumps({"type": "user", "cwd": "/srv/web", "message": {"content": "x"}},
+                  separators=(",", ":")) + "\n"
+open(P + "eeeeeeee-0000-0000-0000-000000000001.jsonl", "w").write(line * 1001)
+open(P + "eeeeeeee-0000-0000-0000-000000000002.jsonl", "w").write(line * 1000)
+# A fixed age: two runs a second apart must print the same LAST column.
+import os
+for n in (1, 2):
+    os.utime(P + "eeeeeeee-0000-0000-0000-00000000000%d.jsonl" % n, (1772445600, 1772445600))
+con = sqlite3.connect(co + "/oc/opencode.db")
+con.executescript("""
+CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT,
+    directory TEXT, title TEXT, cost REAL DEFAULT 0, time_created INTEGER, time_updated INTEGER);
+CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,
+    time_updated INTEGER, data TEXT);
+CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+    time_created INTEGER, time_updated INTEGER, data TEXT);
+""")
+base = 1772445600000
+for sid, n in (("ses_colour0000000000000000001", 101), ("ses_colour0000000000000000002", 100)):
+    con.execute("INSERT INTO session VALUES (?,?,?,?,?,?,?,?)",
+                (sid, 'prj', None, '/srv/oc', 't', 0, base, base))
+    for i in range(n):
+        con.execute("INSERT INTO message VALUES (?,?,?,?,?)",
+                    ('%s_m%d' % (sid, i), sid, base, base, json.dumps({'role': 'user'})))
+con.commit()
+PY
+on_tty() { script -qc "$1" /dev/null 2>&1 | tr -d '\r'; }
+nocolour() { sed 's/\x1b\[[0-9;]*m//g'; }
+CL="CLAUDE_CONFIG_DIR='$CO/claude' CLAUDE_CODE_SESSION_ID='' IDE_SESSIONS_REDACTOR=''"
+OC="OPENCODE_DATA_DIR='$CO/oc' IDE_SESSIONS_REDACTOR=''"
+if command -v script >/dev/null 2>&1; then
+    out="$(on_tty "stty cols 160; env $CL '$ROOT/bin/claude-sessions' --about-min 99999")"
+    contains "colour: the session id is bright green"         "$out" $'\033[92meeeeeeee-0000-0000-0000-000000000001'
+    contains "colour: the directory is bright cyan"           "$out" $'\033[96m/srv/web'
+    contains "colour: over 1000 turns is bright yellow"       "$out" $'\033[93m1001'
+    absent   "colour: 1000 turns is not"                      "$out" $'\033[93m1000'
+    piped="$(env CLAUDE_CONFIG_DIR="$CO/claude" CLAUDE_CODE_SESSION_ID='' IDE_SESSIONS_REDACTOR='' \
+        "$ROOT/bin/claude-sessions" --about-min 99999 2>&1)"
+    absent   "colour: none in a pipe"                         "$piped" $'\033['
+    if [ "$(printf '%s\n' "$out" | nocolour)" = "$piped" ]; then ok "colour: the columns stay where they were"
+    else nope "colour: the columns stay where they were" "$(diff <(printf '%s\n' "$out" | nocolour) <(printf '%s\n' "$piped") | head -4)"; fi
+    out="$(on_tty "NO_COLOR=1 env $CL '$ROOT/bin/claude-sessions' --about-min 99999")"
+    absent   "colour: NO_COLOR turns it off"                  "$out" $'\033['
+    out="$(on_tty "stty cols 160; env $CL '$ROOT/bin/claude-sessions' --older-than 0 --dry-run")"
+    contains "colour: the delete list too"                    "$out" $'\033[92meeeeeeee-0000-0000-0000-000000000001'
+    out="$(on_tty "stty cols 160; env $OC '$ROOT/bin/opencode-sessions'")"
+    contains "colour: opencode, over 100 messages is yellow"  "$out" $'\033[93m101'
+    absent   "colour: opencode, 100 messages is not"          "$out" $'\033[93m100'
+    contains "colour: opencode ids are green"                 "$out" $'\033[92mses_colour'
+    out="$(on_tty "stty cols 160; env CODEX_HOME='$SR/codex' IDE_SESSIONS_REDACTOR='' '$ROOT/bin/codex-sessions'")"
+    contains "colour: codex ids are green"                    "$out" $'\033[92m01a00000-0000-7000-8000-0000000000c'
+    out="$(on_tty "env -u CLAUDE_CODE_SESSION_ID -u CODEX_THREAD_ID -u OPENCODE TZ=UTC CLAUDE_CONFIG_DIR='$IH/claude' CODEX_HOME='$IH/codex' OPENCODE_DATA_DIR='$IH/oc' XDG_STATE_HOME='$IH/state' '$ROOT/bin/ide-history' sessions")"
+    contains "colour: ide-history paints the id"              "$out" $'\033[92m'
+    contains "colour: ide-history paints the directory"       "$out" $'[\033[96m'
+    ihf="$(ih_file "$(printf '%s\n' "$out" | nocolour)")"
+    if [ -s "$ihf" ] && ! grep -q $'\033\[' "$ihf"; then ok "colour: ide-history keeps colour out of its file"
+    else nope "colour: ide-history keeps colour out of its file" "file: ${ihf:-not found}"; fi
+    out="$(on_tty "CCUSAGE_BIN='$STUB/ccusage' '$ROOT/bin/billing' --id aa000000-0000-4000-8000-000000000001")"
+    contains "colour: billing paints the session id"          "$out" $'Session:       \033[92maa000000-0000-4000-8000-000000000001'
+    out="$(CCUSAGE_BIN="$STUB/ccusage" "$ROOT/bin/billing" --id aa000000-0000-4000-8000-000000000001 2>&1)"
+    absent   "colour: billing, none in a pipe"                "$out" $'\033['
+fi
+
 # ── install.sh ──────────────────────────────────────────────────────────────
 # Into a throwaway HOME with all three assistants present. The variables the
 # installer reads to find them are cleared, so a value set in the caller's

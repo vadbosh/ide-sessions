@@ -404,6 +404,11 @@ if [ "$mode" = "session" ]; then
     fi
   fi
 
+  # The session id in the same bright green as the *-sessions listings, on a
+  # terminal only. Tested here: inside $(…) stdout is a pipe and -t 1 is false.
+  c_id=''; c_off=''
+  if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then c_id=$'\033[92m'; c_off=$'\033[0m'; fi
+
   echo "Cost of one session · $(ide_name "$agent")"
   echo
   jq -r --arg started "$started" --arg idename "$(ide_name "$agent")" '.[0] |
@@ -425,7 +430,7 @@ if [ "$mode" = "session" ]; then
       | ([.inputTokens, .outputTokens, .cacheCreationTokens, .cacheReadTokens] | map(n)) as $t
       | "R\t\(.modelName)\t\($t | join("\t"))\t\($t | add)\t\(.cost | n)"),
     "R\tTOTAL\t\(.inputTokens | n)\t\(.outputTokens | n)\t\(.cacheCreationTokens | n)\t\(.cacheReadTokens | n)\t\(.totalTokens | n)\t\(.totalCost | n)"' <<<"$matches" |
-    awk -F'\t' '
+    awk -F'\t' -v cid="$c_id" -v coff="$c_off" '
       function commafy(x,   s, out) {
         s = sprintf("%d", x); out = ""
         while (length(s) > 3) { out = "," substr(s, length(s) - 2) out; s = substr(s, 1, length(s) - 3) }
@@ -437,6 +442,7 @@ if [ "$mode" = "session" ]; then
       $1 == "K" {
         v = $3
         if ($4 == "int") { split($3, p, " "); v = commafy(p[1]) substr($3, length(p[1]) + 1) }
+        if ($2 == "Session") v = cid v coff
         printf "  %-14s %s\n", $2 ":", v
         next
       }
