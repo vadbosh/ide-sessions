@@ -5,7 +5,8 @@
 `billing`, показывает, во что они обошлись: по дням, неделям или месяцам сразу
 для всех трёх IDE или для одной сессии по её id. Пятая, `ide-history`,
 показывает, что было в сессии, — ваши запросы или весь разговор, — и после
-того, как сессия закрыта.
+того, как сессия закрыта. Шестая, `claude-procs`, находит сессию Claude Code,
+остановленную по Ctrl-Z, и возвращает её.
 
 [English version](README.md) · [История версий](CHANGELOG.md)
 
@@ -81,7 +82,7 @@ Codex файл лежит под датой начала, а она расход
 ```bash
 git clone <этот репозиторий> ide-sessions
 cd ide-sessions
-./install.sh              # пять команд в ~/.local/bin, скилл history и /history — в каждый ассистент
+./install.sh              # шесть команд в ~/.local/bin, скилл history и /history — в каждый ассистент
 ./install.sh --dry-run    # сначала посмотреть, что произойдёт
 ```
 
@@ -445,6 +446,60 @@ id сессии, поэтому там это сессия, активная п�
 ничего не было бы видно. Установщик ставит скилл во все найденные ассистенты, а
 команду — в Claude Code и opencode: в Codex нет пользовательских команд.
 
+## Остановленная сессия: `claude-procs`
+
+Ctrl-Z в Claude Code или в редакторе, который Ctrl-G открыл для запроса,
+останавливает всю сессию, и терминал возвращается в shell. Сессия при этом не
+пропала: shell держит её как задание, и `fg` в том же терминале возвращает её.
+Из другого терминала `fg` для неё не сделать.
+
+`claude-procs` показывает все процессы Claude Code на машине и подсказывает, что
+делать с остановленным:
+
+```
+$ claude-procs
+PID      TTY     STATE    SESSION   NAME               DIR
+1372842  pts/0   running  205e6433  infra-04           /srv/infra
+1529592  pts/3   stopped  63e9736c  app-2c             /srv/app
+         prompt draft: /tmp/claude-0/claude-prompt-fe0c01da-e316-40af-a6aa-407a6fca7c3e.md
+         back in its own terminal: type  fg  in pts/3
+         reopen it here:               claude-procs resume 1529592
+1533761  pts/4   running  0db314eb  infra-f8           /srv/infra  (this session)
+
+1 stopped — end them all: claude-procs clean --apply
+```
+
+```bash
+claude-procs                   # все процессы claude: терминал, состояние, сессия, каталог
+claude-procs fg                # в каком терминале набрать fg
+claude-procs resume            # завершить остановленный процесс и открыть его сессию в этом терминале
+claude-procs resume PID -n     # показать, что сделает resume, ничего не меняя
+claude-procs clean             # какие остановленные процессы завершит clean (пробный прогон)
+claude-procs clean --apply     # завершить их
+```
+
+PID можно не указывать, если остановлен ровно один процесс.
+
+`resume` и `clean` завершают только остановленный процесс (состояние `T`).
+Работающий процесс попадает в список, но сигнал не получает никогда — ждёт ли он
+запроса, занят ли работой или это та сессия, из которой запущен `claude-procs`.
+`resume` такой процесс не трогает: два процесса на одной сессии затирают записи
+друг друга.
+
+Транскрипт сессии уже лежит на диске. В самом процессе есть только черновик
+запроса, открытый в редакторе. Поэтому перед тем как завершить процесс,
+`claude-procs` копирует этот черновик и swap-файл редактора с несохранёнными
+правками в `~/.local/state/ide-sessions/drafts/`. Чтобы завершить процесс, он
+шлёт SIGTERM и SIGCONT его группе процессов, куда входит и редактор. Через 5
+секунд шлёт SIGKILL. Затем `resume` запускает в каталоге сессии
+`claude --resume <id>` с исходными флагами: Claude Code ищет сессию только
+среди тех, что были начаты в текущем каталоге.
+
+id и имя сессии берутся из `~/.claude/sessions/<pid>.json`: этот файл Claude
+Code пишет для каждого работающего процесса. Если файла нет или его оставил
+прежний процесс с тем же pid, id берётся из `--resume` в командной строке.
+`claude-procs` читает `/proc`, поэтому работает только в Linux.
+
 ## Как работает `--sum`
 
 В два прохода.
@@ -701,6 +756,9 @@ summarized with claude-haiku-4-5-20251001
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | хранилище Claude Code |
 | `CODEX_HOME` | `~/.codex` | хранилище Codex |
 | `OPENCODE_DATA_DIR` | `~/.local/share/opencode` | хранилище opencode |
+| `CLAUDE_PROCS_BIN` | `claude` | какую команду запускает `claude-procs resume` |
+| `CLAUDE_PROCS_WAIT` | `5` | сколько секунд `claude-procs` ждёт после SIGTERM, прежде чем послать SIGKILL |
+| `CLAUDE_PROCS_COMM` | `claude` | процессы с каким именем ищет `claude-procs` |
 
 ## Особенности по IDE
 

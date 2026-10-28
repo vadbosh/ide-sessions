@@ -5,6 +5,8 @@ Code, Codex CLI and opencode — including the one you lost track of.** A fourth
 `billing`, shows what they cost: per day, week or month across all three, or
 for one session by its id. A fifth, `ide-history`, shows what was said in a
 session — your prompts, or the whole conversation — after the session is gone.
+A sixth, `claude-procs`, finds a Claude Code session stopped by Ctrl-Z and
+gets it back.
 
 [Русская версия](README.RU.md) · [Changelog](CHANGELOG.md)
 
@@ -82,7 +84,7 @@ cost — and writes everything else, tool calls included, to a file.
 ```bash
 git clone <this repo> ide-sessions
 cd ide-sessions
-./install.sh              # five commands into ~/.local/bin, the history skill and /history into each assistant
+./install.sh              # six commands into ~/.local/bin, the history skill and /history into each assistant
 ./install.sh --dry-run    # see what it would do first
 ```
 
@@ -436,6 +438,59 @@ reply without it would show nothing. The installer puts the skill into every
 assistant it finds and the command into Claude Code and opencode; Codex has no
 user commands.
 
+## A stopped session: `claude-procs`
+
+Ctrl-Z in Claude Code, or in the editor that Ctrl-G opened for a prompt, stops
+the whole session and returns the terminal to the shell. The session is not
+lost. The shell keeps it as a job, and `fg` in that terminal brings it back.
+No other terminal can run `fg` for it.
+
+`claude-procs` lists every Claude Code process on the machine and tells you
+what to do with a stopped one:
+
+```
+$ claude-procs
+PID      TTY     STATE    SESSION   NAME               DIR
+1372842  pts/0   running  205e6433  infra-04           /srv/infra
+1529592  pts/3   stopped  63e9736c  app-2c             /srv/app
+         prompt draft: /tmp/claude-0/claude-prompt-fe0c01da-e316-40af-a6aa-407a6fca7c3e.md
+         back in its own terminal: type  fg  in pts/3
+         reopen it here:               claude-procs resume 1529592
+1533761  pts/4   running  0db314eb  infra-f8           /srv/infra  (this session)
+
+1 stopped — end them all: claude-procs clean --apply
+```
+
+```bash
+claude-procs                   # every claude process: terminal, state, session, directory
+claude-procs fg                # the terminal to type fg in
+claude-procs resume            # end the stopped process, reopen its session in this terminal
+claude-procs resume PID -n     # print what resume would do, change nothing
+claude-procs clean             # the stopped processes that clean would end (dry run)
+claude-procs clean --apply     # end them
+```
+
+You can leave out the PID when exactly one process is stopped.
+
+`resume` and `clean` end only a stopped process (state `T`). A running process
+is listed and never gets a signal: idle at its prompt, busy, or the session in
+which you run `claude-procs`. `resume` refuses a running process, because two
+processes on one session overwrite each other.
+
+The session transcript is already on disk. The only thing that lives in the
+process is the prompt draft open in the editor. So before it ends a process,
+`claude-procs` copies that draft, and the editor's swap file with unsaved
+edits, to `~/.local/state/ide-sessions/drafts/`. To end the process, it sends
+SIGTERM and SIGCONT to its process group, which includes the editor. After 5
+seconds it sends SIGKILL. `resume` then starts `claude --resume <id>` with the
+original flags. It starts it in the session's directory, because Claude Code
+looks for a session only among those started in the current directory.
+
+The session id and name come from `~/.claude/sessions/<pid>.json`, which Claude
+Code writes for every running process. If that file is missing, or an earlier
+process with the same pid left it, the id comes from `--resume` on the command
+line. `claude-procs` reads `/proc`, so it runs on Linux only.
+
 ## How `--sum` works
 
 Two passes.
@@ -691,6 +746,9 @@ summarized with claude-haiku-4-5-20251001
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code storage |
 | `CODEX_HOME` | `~/.codex` | Codex storage |
 | `OPENCODE_DATA_DIR` | `~/.local/share/opencode` | opencode storage |
+| `CLAUDE_PROCS_BIN` | `claude` | the command `claude-procs resume` starts |
+| `CLAUDE_PROCS_WAIT` | `5` | seconds `claude-procs` waits after SIGTERM before SIGKILL |
+| `CLAUDE_PROCS_COMM` | `claude` | the process name `claude-procs` looks for |
 
 ## Notes per IDE
 

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.17.0
+
+- **New command `claude-procs`: a Claude Code session stopped by Ctrl-Z.**
+  Ctrl-Z in Claude Code, or in the editor that Ctrl-G opened, stops the
+  session, and the session looks gone. `claude-procs` lists every Claude Code
+  process with its terminal, state, session id, name and directory. For a
+  stopped process it names the terminal where `fg` brings the process back.
+  `claude-procs resume` ends the stopped process and reopens its session in the
+  current terminal, with the original flags, in the session's directory.
+  `claude-procs clean` ends every stopped process: it is a dry run until
+  `--apply`. A running process is never signalled. Before it ends a process,
+  `claude-procs` saves the prompt draft open in the editor, and the editor's
+  swap file, to `~/.local/state/ide-sessions/drafts/`. Linux only.
+  `install.sh` now installs six commands.
+
 ## 0.16.0
 
 - **Colour on a terminal.** Every listing of `claude-sessions`,

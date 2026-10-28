@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the ide-sessions tools — Linux / macOS.
 #
-#   ./install.sh                 install the five commands on PATH, and the
+#   ./install.sh                 install the six commands on PATH, and the
 #                                history skill and /history command into
 #                                every assistant found
 #   ./install.sh --dry-run       print what would happen, change nothing
@@ -19,6 +19,9 @@
 # assistant runs it. It replaced agent-history in 0.11.0: an agent-history this
 # script installed is removed, one edited by hand is left with a warning.
 #
+# claude-procs reads /proc and the Claude Code sessions/<pid>.json files: a
+# session stopped by Ctrl-Z is found there and reopened. Linux only.
+#
 # Idempotent: re-running replaces only what changed. A file it overwrites is
 # backed up ONLY when that content is not already in the source repository — a
 # hand edit is the one thing git cannot give back. Every backup goes to
@@ -31,7 +34,7 @@ set -euo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${IDE_SESSIONS_BIN_DIR:-$HOME/.local/bin}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-COMMANDS="claude-sessions codex-sessions opencode-sessions billing ide-history"
+COMMANDS="claude-sessions codex-sessions opencode-sessions billing ide-history claude-procs"
 RETIRED="agent-history"
 BACKUPS="${XDG_STATE_HOME:-$HOME/.local/state}/ide-sessions/backups"
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
@@ -45,7 +48,7 @@ while [ $# -gt 0 ]; do
         --dry-run)   DRY_RUN=1 ;;
         --uninstall) UNINSTALL=1 ;;
         --bin-dir)   BIN_DIR="${2:-}"; shift ;;
-        -h|--help)   sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
+        -h|--help)   sed -n '2,31p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift

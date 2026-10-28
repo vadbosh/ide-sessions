@@ -1866,6 +1866,97 @@ inst
 if [ ! -e "$IN_HOME/.codex" ] && [ ! -e "$IN_HOME/.config/opencode" ]; then ok "install: an assistant that is not there is not created"
 else nope "install: an assistant that is not there is not created"; fi
 
+# ── claude-procs ────────────────────────────────────────────────────────────
+# Fake claude processes under a name of their own, so the real sessions on the
+# machine are neither listed nor signalled. Each fake runs a child holding a
+# prompt draft path in its argv, the way the editor opened by Ctrl-G does.
+echo "claude-procs"
+CP="$ROOT/bin/claude-procs"
+CP_COMM="clpt$$"
+CP_COMM="${CP_COMM:0:15}"
+export CLAUDE_PROCS_COMM="$CP_COMM" CLAUDE_PROCS_WAIT=2 XDG_STATE_HOME="$TMP/state"
+mkdir -p "$TMP/cp/bin" "$TMP/cp/work" "$TMP/cp/prompts" "$CLAUDE_DIR/sessions"
+cat > "$TMP/cp/bin/$CP_COMM" <<'SH'
+#!/bin/bash
+echo $$ > "$CP_PIDFILE"
+tail -f "$CP_DRAFT" >/dev/null &
+while :; do sleep 0.2; done
+SH
+chmod +x "$TMP/cp/bin/$CP_COMM"
+# cp_start NAME [ARGS…] — a fake in its own process group, as a shell's job is
+cp_start() {
+    local name="$1"; shift
+    echo "draft $name" > "$TMP/cp/prompts/claude-prompt-$name.md"
+    (cd "$TMP/cp/work" || exit; CP_PIDFILE="$TMP/cp/$name.pid" CP_DRAFT="$TMP/cp/prompts/claude-prompt-$name.md" \
+        setsid "$TMP/cp/bin/$CP_COMM" "$@" </dev/null >/dev/null 2>&1 &)
+    local i; for i in $(seq 50); do [ -s "$TMP/cp/$name.pid" ] && break; sleep 0.1; done
+    cat "$TMP/cp/$name.pid"
+}
+cp_json() {   # cp_json PID SID [PROCSTART]
+    local start; start="$(awk '{sub(/.*\) /, ""); print $20}' "/proc/$1/stat")"
+    printf '{"pid":%s,"sessionId":"%s","cwd":"%s","procStart":"%s","name":"fake-%s"}\n' \
+        "$1" "$2" "$TMP/cp/work" "${3:-$start}" "$1" > "$CLAUDE_DIR/sessions/$1.json"
+}
+gone() { local i; for i in $(seq 30); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.1; done; return 1; }
+CP_SID_A="aaaaaaaa-0000-0000-0000-000000000001"
+CP_SID_B="bbbbbbbb-0000-0000-0000-000000000002"
+CP_SID_R="cccccccc-0000-0000-0000-000000000003"
+P_RUN="$(cp_start run --resume "$CP_SID_R")"
+P_A="$(cp_start a --strict-mcp-config --resume "$CP_SID_B")"
+P_B="$(cp_start b --resume "$CP_SID_B")"
+cp_json "$P_A" "$CP_SID_A"
+cp_json "$P_B" "$CP_SID_A" 1     # a file left by an earlier process with this pid
+kill -STOP -- "-$P_A"; kill -STOP -- "-$P_B"
+TAIL_A="$(ps -o pid= --ppid "$P_A" | tr -d ' ')"
+sleep 0.2
+
+out="$("$CP" 2>&1)"
+contains "claude-procs: lists a running fake" "$out" "$P_RUN"
+contains "claude-procs: a stopped one says stopped" "$(printf '%s\n' "$out" | grep "^$P_A ")" "stopped"
+contains "claude-procs: the session id comes from sessions/<pid>.json" "$out" "${CP_SID_A:0:8}"
+contains "claude-procs: a stale json is ignored, --resume in argv used" "$(printf '%s\n' "$out" | grep "^$P_B ")" "${CP_SID_B:0:8}"
+contains "claude-procs: the prompt draft is shown" "$out" "claude-prompt-a.md"
+contains "claude-procs: a stopped one offers resume" "$out" "claude-procs resume $P_A"
+
+out="$("$CP" resume 2>&1)"; rc=$?
+[ "$rc" -eq 1 ] && ok "claude-procs: resume with two stopped and no pid refuses" \
+    || nope "claude-procs: resume with two stopped and no pid refuses" "rc=$rc"
+contains "claude-procs: ... and says to name one" "$out" "name one"
+
+out="$("$CP" resume "$P_RUN" -n 2>&1)"; rc=$?
+[ "$rc" -eq 1 ] && kill -0 "$P_RUN" 2>/dev/null && ok "claude-procs: resume of a running one refuses" \
+    || nope "claude-procs: resume of a running one refuses" "rc=$rc $out"
+
+out="$("$CP" clean 2>&1)"
+contains "claude-procs: clean dry-run lists the stopped" "$out" "$P_A"
+absent "claude-procs: clean dry-run leaves out the running" "$out" "$P_RUN"
+kill -0 "$P_A" 2>/dev/null && kill -0 "$P_B" 2>/dev/null && ok "claude-procs: clean dry-run ends nothing" \
+    || nope "claude-procs: clean dry-run ends nothing"
+
+out="$("$CP" resume "$P_A" -n 2>&1)"
+contains "claude-procs: resume -n keeps the original flags" "$out" "--strict-mcp-config"
+contains "claude-procs: resume -n resumes the session from the json" "$out" "--resume $CP_SID_A"
+absent "claude-procs: resume -n drops the old --resume" "$out" "$CP_SID_B"
+kill -0 "$P_A" 2>/dev/null && ok "claude-procs: resume -n ends nothing" || nope "claude-procs: resume -n ends nothing"
+
+printf '#!/bin/sh\necho "cwd=$(pwd) args=$*"\n' > "$TMP/cp/bin/stub-claude"; chmod +x "$TMP/cp/bin/stub-claude"
+out="$(CLAUDE_PROCS_BIN="$TMP/cp/bin/stub-claude" "$CP" resume "$P_A" 2>&1)"
+gone "$P_A" && ok "claude-procs: resume ends the stopped process" || nope "claude-procs: resume ends the stopped process"
+gone "$TAIL_A" && ok "claude-procs: ... and the rest of its process group" || nope "claude-procs: ... and the rest of its process group"
+contains "claude-procs: resume starts claude in the session's directory" "$out" "cwd=$TMP/cp/work"
+contains "claude-procs: resume starts it with --resume <id>" "$out" "--strict-mcp-config --resume $CP_SID_A"
+if ls "$TMP/state/ide-sessions/drafts/$CP_SID_A-"*-claude-prompt-a.md >/dev/null 2>&1; then
+    ok "claude-procs: the prompt draft is saved before the end"
+else nope "claude-procs: the prompt draft is saved before the end" "$out"; fi
+
+out="$("$CP" clean --apply 2>&1)"
+gone "$P_B" && ok "claude-procs: clean --apply ends the stopped one" || nope "claude-procs: clean --apply ends the stopped one" "$out"
+kill -0 "$P_RUN" 2>/dev/null && ok "claude-procs: clean --apply leaves the running one" \
+    || nope "claude-procs: clean --apply leaves the running one"
+out="$("$CP" clean 2>&1)"
+contains "claude-procs: nothing stopped, nothing to clean" "$out" "nothing to clean"
+kill -- "-$P_RUN" 2>/dev/null
+
 # ── report ──────────────────────────────────────────────────────────────────
 echo
 echo "$PASS passed, $FAIL failed"

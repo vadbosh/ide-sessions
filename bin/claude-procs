@@ -1,0 +1,375 @@
+#!/usr/bin/env bash
+# claude-procs: the running Claude Code processes on this machine, and what to
+# do with one that was stopped by Ctrl-Z.
+#
+#   claude-procs                     every claude process: pid, terminal, state,
+#                                    session, directory, and what to do next
+#   claude-procs fg [PID]            where to type `fg` to get a stopped one back
+#   claude-procs resume [PID]        end a stopped one and reopen its session in
+#                                    THIS terminal (claude --resume <id>)
+#   claude-procs resume [PID] -n     print what resume would do, do nothing
+#   claude-procs clean               the stopped ones that clean would end (dry-run)
+#   claude-procs clean --apply       end them
+#
+# PID may be left out when exactly one claude process is stopped.
+#
+# Why this exists: Ctrl-Z in a Claude Code session — or in the editor it opened
+# with Ctrl-G — stops the whole process group, and the session looks gone. It
+# is not: the shell that ran it holds it as a job, and `fg` there brings it
+# back. Another terminal cannot do `fg` for it — job control belongs to that
+# one shell — so the alternative is to end the stopped process and reopen its
+# session here. Its transcript is on disk; what lives only in the process is a
+# prompt draft open in the editor, and that is saved first.
+#
+# Only a stopped process (state T) is ever ended. A running one — idle at its
+# prompt, busy, or this very session — is listed and never signalled.
+#
+# Before ending a process, the prompt draft its editor has open
+# (claude-prompt-*.md) and the editor's swap file, which holds unsaved edits,
+# are copied to $XDG_STATE_HOME/ide-sessions/drafts/.
+#
+# Linux only: it reads /proc.
+#
+# Environment:
+#   CLAUDE_CONFIG_DIR       where sessions/<pid>.json live (default ~/.claude)
+#   CLAUDE_PROCS_COMM       process name to look for (default: claude)
+#   CLAUDE_PROCS_BIN        command resume starts (default: claude)
+#   CLAUDE_PROCS_WAIT       seconds to wait after SIGTERM before SIGKILL (default 5)
+#   NO_COLOR                no colour
+set -Eeuo pipefail
+
+readonly COMM="${CLAUDE_PROCS_COMM:-claude}"
+readonly CLAUDE_BIN="${CLAUDE_PROCS_BIN:-claude}"
+readonly WAIT_SECS="${CLAUDE_PROCS_WAIT:-5}"
+readonly SESSIONS_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions"
+readonly DRAFTS_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/ide-sessions/drafts"
+
+usage() { sed -n '2,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+die()   { printf 'claude-procs: %s\n' "$*" >&2; exit 1; }
+
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+    C_ID=$'\033[92m'; C_DIR=$'\033[96m'; C_STOP=$'\033[93m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
+else
+    C_ID=''; C_DIR=''; C_STOP=''; C_DIM=''; C_OFF=''
+fi
+
+# ── reading a process ───────────────────────────────────────────────────────
+
+# proc_stat PID — sets ST_STATE ST_PPID ST_PGRP ST_SID ST_START. The command
+# name sits in parentheses and may hold spaces, so fields are counted from the
+# last ')'.
+proc_stat() {
+    local raw
+    raw="$(cat "/proc/$1/stat" 2>/dev/null)" || return 1
+    raw="${raw##*) }"
+    local -a f
+    read -ra f <<<"$raw"
+    ST_STATE="${f[0]}" ST_PPID="${f[1]}" ST_PGRP="${f[2]}" ST_SID="${f[3]}" ST_START="${f[19]}"
+}
+
+alive() {
+    proc_stat "$1" || return 1
+    [[ "$ST_STATE" != Z && "$ST_STATE" != X ]]
+}
+
+# proc_args PID — the argv of PID into the array ARGS, NUL-safe.
+proc_args() {
+    ARGS=()
+    [[ -r "/proc/$1/cmdline" ]] || return 1
+    mapfile -d '' ARGS <"/proc/$1/cmdline"
+}
+
+proc_tty() { ps -o tty= -p "$1" 2>/dev/null | tr -d ' '; }
+
+# json_str JSON KEY — a string value of a flat one-line JSON object. The
+# sessions files are written by Claude Code on one line, keys unique.
+json_str() {
+    local re="\"$2\":\"([^\"]*)\""
+    [[ "$1" =~ $re ]] && printf '%s' "${BASH_REMATCH[1]}"
+}
+
+# session_of PID START — sets S_ID S_NAME S_CWD from sessions/<pid>.json, but
+# only when its procStart is this process's start time: a pid is reused, and a
+# file left by an earlier process must not name a session it never had. Falls
+# back to --resume in argv for the id, and to /proc/PID/cwd for the directory.
+session_of() {
+    local pid="$1" start="$2" json="" file="$SESSIONS_DIR/$1.json"
+    S_ID="" S_NAME="" S_CWD=""
+    [[ -r "$file" ]] && json="$(<"$file")"
+    if [[ -n "$json" && "$(json_str "$json" procStart)" == "$start" ]]; then
+        S_ID="$(json_str "$json" sessionId)"
+        S_NAME="$(json_str "$json" name)"
+        S_CWD="$(json_str "$json" cwd)"
+    fi
+    if [[ -z "$S_ID" ]] && proc_args "$pid"; then
+        local i
+        for ((i = 1; i < ${#ARGS[@]}; i++)); do
+            case "${ARGS[i]}" in
+                --resume=*) S_ID="${ARGS[i]#--resume=}" ;;
+                --resume|-r) S_ID="${ARGS[i+1]:-}" ;;
+            esac
+        done
+    fi
+    [[ -n "$S_CWD" ]] || S_CWD="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+}
+
+# descendants PID — every pid below PID, one per line.
+descendants() {
+    ps -eo pid=,ppid= | awk -v root="$1" '
+        { kids[$2] = kids[$2] " " $1 }
+        END {
+            n = split(kids[root], q, " ")
+            for (i = 1; i <= n; i++) {
+                print q[i]
+                m = split(kids[q[i]], more, " ")
+                for (j = 1; j <= m; j++) q[++n] = more[j]
+            }
+        }'
+}
+
+# draft_of PID — the claude-prompt-*.md an editor below PID has open, if any.
+draft_of() {
+    local kid a
+    while read -r kid; do
+        proc_args "$kid" || continue
+        for a in "${ARGS[@]:1}"; do
+            case "$a" in */claude-prompt-*.md) printf '%s' "$a"; return 0 ;; esac
+        done
+    done < <(descendants "$1")
+    return 1
+}
+
+# The pids this script runs under: the session that called it must never be
+# ended, even if something stopped it in the middle of the call.
+declare -A MINE=()
+mark_ancestors() {
+    local p=$$
+    while [[ "$p" -gt 1 ]] && proc_stat "$p"; do
+        MINE[$p]=1
+        p="$ST_PPID"
+    done
+}
+
+# ── the table ───────────────────────────────────────────────────────────────
+
+# collect — fills P_* arrays, one entry per claude process, oldest first.
+# A native install runs as `claude`; an npm one as `node …/claude`, and there
+# the process name is the interpreter's.
+P_PID=() P_STATE=() P_TTY=() P_SHELL=() P_ID=() P_NAME=() P_CWD=() P_DRAFT=() P_MINE=()
+collect() {
+    local pid comm a1 _
+    while read -r pid comm _ a1 _; do
+        if [[ "$comm" != "$COMM" ]]; then
+            case "$comm" in node|bun|deno) ;; *) continue ;; esac
+            [[ "${a1##*/}" == "$COMM" ]] || continue
+        fi
+        proc_stat "$pid" || continue
+        [[ "$ST_STATE" == Z || "$ST_STATE" == X ]] && continue
+        local state=running shell=gone draft=""
+        [[ "$ST_STATE" == T ]] && state=stopped
+        alive "$ST_SID" && shell="$ST_SID"
+        proc_stat "$pid"
+        session_of "$pid" "$ST_START"
+        draft="$(draft_of "$pid" || true)"
+        P_PID+=("$pid") P_STATE+=("$state") P_TTY+=("$(proc_tty "$pid")")
+        P_SHELL+=("$shell") P_ID+=("$S_ID") P_NAME+=("$S_NAME") P_CWD+=("$S_CWD")
+        P_DRAFT+=("$draft") P_MINE+=("${MINE[$pid]:-}")
+    done < <(ps -eo pid=,comm=,args= --sort=start_time)
+}
+
+# pick ACTION [PID] — sets IDX to the entry the command acts on. With no PID,
+# the one stopped process; with several, the caller has to name one.
+pick() {
+    local action="$1" want="${2:-}" i stopped=()
+    for i in "${!P_PID[@]}"; do
+        [[ "${P_STATE[i]}" == stopped ]] && stopped+=("$i")
+        if [[ -n "$want" && "${P_PID[i]}" == "$want" ]]; then IDX="$i"; return 0; fi
+    done
+    [[ -n "$want" ]] && die "no $COMM process with pid $want — run claude-procs to list them"
+    case "${#stopped[@]}" in
+        0) die "no stopped $COMM process — nothing to $action" ;;
+        1) IDX="${stopped[0]}" ;;
+        *) die "${#stopped[@]} stopped $COMM processes — name one: claude-procs $action <PID>" ;;
+    esac
+}
+
+show_list() {
+    if [[ ${#P_PID[@]} -eq 0 ]]; then
+        printf 'no %s process running\n' "$COMM"
+        return 0
+    fi
+    printf '%-8s %-7s %-8s %-9s %-18s %s\n' PID TTY STATE SESSION NAME DIR
+    local i state id
+    for i in "${!P_PID[@]}"; do
+        state="${P_STATE[i]}"
+        [[ "$state" == stopped ]] && state="${C_STOP}$(printf '%-8s' stopped)${C_OFF}" \
+                                  || state="$(printf '%-8s' "$state")"
+        id="${P_ID[i]:0:8}"
+        printf '%-8s %-7s %s %s%-9s%s %-18s %s%s%s%s\n' \
+            "${P_PID[i]}" "${P_TTY[i]:-?}" "$state" \
+            "$C_ID" "${id:--}" "$C_OFF" "${P_NAME[i]:--}" \
+            "$C_DIR" "${P_CWD[i]:-?}" "$C_OFF" \
+            "${P_MINE[i]:+  (this session)}"
+        [[ -n "${P_DRAFT[i]}" ]] && printf '         %sprompt draft: %s%s\n' "$C_DIM" "${P_DRAFT[i]}" "$C_OFF"
+        if [[ "${P_STATE[i]}" == stopped ]]; then
+            [[ "${P_SHELL[i]}" != gone ]] \
+                && printf '         back in its own terminal: type  fg  in %s\n' "${P_TTY[i]:-its terminal}"
+            printf '         reopen it here:               claude-procs resume %s\n' "${P_PID[i]}"
+        fi
+    done
+    local n=0
+    for i in "${P_STATE[@]}"; do [[ "$i" == stopped ]] && n=$((n + 1)); done
+    [[ $n -gt 0 ]] && printf '\n%d stopped — end them all: claude-procs clean --apply\n' "$n"
+    return 0
+}
+
+# ── ending a stopped process ────────────────────────────────────────────────
+
+# save_draft IDX — copies the prompt draft and its editor swap file aside.
+save_draft() {
+    local draft="${P_DRAFT[$1]}" stamp f to
+    [[ -n "$draft" ]] || return 0
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$DRAFTS_DIR"
+    for f in "$draft" "$(dirname "$draft")/.$(basename "$draft").swp"; do
+        [[ -f "$f" ]] || continue
+        to="$DRAFTS_DIR/${P_ID[$1]:-pid${P_PID[$1]}}-$stamp-$(basename "$f")"
+        cp -p -- "$f" "$to"
+        printf '  saved %s\n' "$to"
+        [[ "$to" == *.swp ]] && printf '  unsaved edits: vim -r %q\n' "$to"
+    done
+    return 0
+}
+
+# end_proc IDX — SIGTERM, then SIGCONT so a stopped process can act on it;
+# SIGKILL after WAIT_SECS. The whole process group when claude leads it — the
+# editor and any tool it was running stopped with it.
+end_proc() {
+    local pid="${P_PID[$1]}" target
+    [[ "${P_STATE[$1]}" == stopped ]] || die "pid $pid is running, not stopped — not touching it"
+    [[ -z "${P_MINE[$1]}" ]] || die "pid $pid is the session running this command — not touching it"
+    proc_stat "$pid" || { printf '  pid %s already gone\n' "$pid"; return 0; }
+    [[ "$ST_STATE" == T ]] || die "pid $pid is no longer stopped — not touching it"
+    save_draft "$1"
+    target="$pid"
+    [[ "$ST_PGRP" == "$pid" ]] && target="-$pid"
+    kill -TERM -- "$target" 2>/dev/null || true
+    kill -CONT -- "$target" 2>/dev/null || true
+    local t
+    for ((t = 0; t < WAIT_SECS * 10; t++)); do
+        alive "$pid" || { printf '  ended pid %s\n' "$pid"; return 0; }
+        sleep 0.1
+    done
+    kill -KILL -- "$target" 2>/dev/null || true
+    for ((t = 0; t < 20; t++)); do
+        alive "$pid" || { printf '  ended pid %s (SIGKILL after %ss)\n' "$pid" "$WAIT_SECS"; return 0; }
+        sleep 0.1
+    done
+    die "pid $pid survived SIGKILL"
+}
+
+# ── commands ────────────────────────────────────────────────────────────────
+
+cmd_fg() {
+    pick fg "${1:-}"
+    local pid="${P_PID[IDX]}" tty="${P_TTY[IDX]}"
+    if [[ "${P_STATE[IDX]}" != stopped ]]; then
+        printf 'pid %s is running in %s — switch to that terminal\n' "$pid" "${tty:-its terminal}"
+    elif [[ "${P_SHELL[IDX]}" == gone ]]; then
+        printf 'pid %s is stopped and the shell that ran it is gone — no fg possible.\n' "$pid"
+        printf 'reopen it here: claude-procs resume %s\n' "$pid"
+    else
+        printf 'in the terminal on %s, type:\n\n    fg\n\n' "${tty:-?}"
+        printf 'several jobs there: jobs, then fg %%N.  That terminal lost: claude-procs resume %s\n' "$pid"
+    fi
+}
+
+cmd_resume() {
+    local want="" dry=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -n|--dry-run) dry=1 ;;
+            -*) die "resume: unknown option $1" ;;
+            *) want="$1" ;;
+        esac
+        shift
+    done
+    pick resume "$want"
+    local i="$IDX" pid="${P_PID[IDX]}" sid="${P_ID[IDX]}" cwd="${P_CWD[IDX]}"
+    [[ "${P_STATE[i]}" == stopped ]] \
+        || die "pid $pid is running in ${P_TTY[i]:-a terminal} — two processes on one session overwrite each other. Use that one."
+    [[ -n "$sid" ]] || die "pid $pid: session id unknown (no sessions/$pid.json, no --resume) — find it with claude-sessions -p"
+    [[ -d "$cwd" ]] || die "pid $pid: its directory '$cwd' is gone"
+
+    # The original flags, without the ones that pick a session: the resumed
+    # process gets --resume <id> instead. Under npm argv starts with the
+    # interpreter and the script path; the flags follow the script.
+    proc_args "$pid"
+    local k first=1
+    for ((k = 0; k < ${#ARGS[@]} && k < 2; k++)); do
+        [[ "${ARGS[k]##*/}" == "$COMM" ]] && first=$((k + 1))
+    done
+    local -a cmd=("$CLAUDE_BIN") a=("${ARGS[@]:first}")
+    for ((k = 0; k < ${#a[@]}; k++)); do
+        case "${a[k]}" in
+            --resume|-r) k=$((k + 1)) ;;
+            --resume=*|--continue|-c) ;;
+            *) cmd+=("${a[k]}") ;;
+        esac
+    done
+    cmd+=(--resume "$sid")
+
+    local shown
+    shown="$(printf '%q ' "${cmd[@]}")"
+    printf 'pid %s, session %s%s%s, in %s%s%s\n' "$pid" "$C_ID" "$sid" "$C_OFF" "$C_DIR" "$cwd" "$C_OFF"
+    if [[ $dry -eq 1 ]]; then
+        printf 'would end pid %s and run, in %s:\n  %s\n' "$pid" "$cwd" "$shown"
+        return 0
+    fi
+    end_proc "$i"
+    printf '  starting: %s\n\n' "$shown"
+    cd -- "$cwd"
+    exec "${cmd[@]}"
+}
+
+cmd_clean() {
+    local apply=0 i n=0
+    case "${1:-}" in
+        --apply) apply=1 ;;
+        '') ;;
+        *) die "clean: unknown option $1" ;;
+    esac
+    for i in "${!P_PID[@]}"; do
+        [[ "${P_STATE[i]}" == stopped && -z "${P_MINE[i]}" ]] || continue
+        n=$((n + 1))
+        printf '%s  %s  %s%s%s  %s%s%s\n' "${P_PID[i]}" "${P_TTY[i]:-?}" \
+            "$C_ID" "${P_ID[i]:-?}" "$C_OFF" "$C_DIR" "${P_CWD[i]:-?}" "$C_OFF"
+        [[ $apply -eq 1 ]] && end_proc "$i"
+    done
+    if [[ $n -eq 0 ]]; then
+        printf 'no stopped %s process — nothing to clean\n' "$COMM"
+    elif [[ $apply -eq 0 ]]; then
+        printf '\n%d stopped, running ones untouched. Dry run — end them: claude-procs clean --apply\n' "$n"
+        printf 'their sessions stay on disk: claude --resume <id> reopens any of them later\n'
+    fi
+}
+
+main() {
+    case "${1:-}" in
+        -h|--help|help) usage; return 0 ;;
+    esac
+    [[ -d /proc/self ]] || die "needs /proc — Linux only"
+    mark_ancestors
+    collect
+    local sub="${1:-list}"
+    [[ $# -gt 0 ]] && shift
+    case "$sub" in
+        list)   show_list ;;
+        fg)     cmd_fg "$@" ;;
+        resume) cmd_resume "$@" ;;
+        clean)  cmd_clean "$@" ;;
+        *)      usage >&2; exit 2 ;;
+    esac
+}
+
+main "$@"
