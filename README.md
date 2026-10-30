@@ -864,7 +864,7 @@ up to codex-cli 0.135 the turns are `event_msg/user_message`, from 0.154 they
 are `response_item/message` with a role. Both are read, and a file written
 across an upgrade does not count its turns twice.
 
-**opencode** — a sqlite database. A session is rows across eight tables; the
+**opencode** — a sqlite database. A session is rows across many tables; the
 schema declares `ON DELETE CASCADE` but `PRAGMA foreign_keys` defaults to off,
 so every table is deleted explicitly inside one transaction, and child
 (subagent) sessions are pulled in with their parent. Rows are dumped as INSERT
@@ -872,6 +872,14 @@ statements into the trash dir before deletion. The queries go through Python's
 bundled `sqlite3` module rather than the `sqlite3` CLI, which is a separate
 package and often missing — where it was, this script printed `sqlite3 not
 found` and listed nothing at all.
+
+opencode 2.x moved the sessions to new tables: `session_v2`, and
+`session_message` with the parts of an answer inside each message. The old
+`session`, `message` and `part` keep only what an older version wrote, and
+2.x copied all of that over. Where `session_v2` exists, `opencode-sessions`
+and `ide-history` read the new tables only, through temporary views named
+like the old ones; on an older opencode nothing changes. `--rm` deletes a
+session from the old and the new tables alike, the event log included.
 
 Running `opencode run` creates a session of its own, so `--sum` deletes that
 scratch session afterward by the title it gave it.

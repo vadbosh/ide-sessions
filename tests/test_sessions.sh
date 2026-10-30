@@ -1709,6 +1709,130 @@ else
     nope "search: the three copies of the shared part are identical"
 fi
 
+# ── opencode 2.x ────────────────────────────────────────────────────────────
+# Sessions in session_v2, messages in session_message with the parts of an
+# answer inside data.content; the old tables keep only what an older version
+# wrote, and that was copied over. Everything must read the new tables, and
+# --rm must clear them.
+echo "opencode 2.x"
+
+V2="$TMP/oc-v2"
+mkdir -p "$V2"
+python3 - "$V2/opencode.db" <<'PY'
+import json, sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.executescript("""
+CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, workspace_id TEXT, parent_id TEXT,
+    slug TEXT, directory TEXT, path TEXT, title TEXT, version TEXT, share_url TEXT,
+    cost REAL DEFAULT 0, time_created INTEGER, time_updated INTEGER, time_archived INTEGER);
+CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,
+    time_updated INTEGER, data TEXT);
+CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+    time_created INTEGER, time_updated INTEGER, data TEXT);
+CREATE TABLE session_v2 (id TEXT PRIMARY KEY, project_id TEXT, workspace_id TEXT, parent_id TEXT,
+    fork_session_id TEXT, slug TEXT, directory TEXT, path TEXT, title TEXT, version TEXT,
+    share_url TEXT, cost REAL DEFAULT 0, time_created INTEGER, time_updated INTEGER,
+    time_archived INTEGER);
+CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER,
+    time_created INTEGER, time_updated INTEGER, data TEXT);
+CREATE TABLE instruction_state (session_id TEXT, epoch_start INTEGER, through_seq INTEGER,
+    initial_values TEXT, current_values TEXT);
+CREATE TABLE event_sequence (aggregate_id TEXT, seq INTEGER, owner_id TEXT);
+""")
+base = 1772445600000
+OLD, NEW, KID = "ses_v2old000000000000000001", "ses_v2new000000000000000002", "ses_v2kid000000000000000003"
+# The old session as an older opencode wrote it, and as 2.x copied it.
+con.execute("INSERT INTO session (id, directory, title, time_created, time_updated) VALUES (?,?,?,?,?)",
+            (OLD, '/srv/old', 'old', base, base + 1000))
+con.execute("INSERT INTO message VALUES ('mo1', ?, ?, ?, ?)", (OLD, base, base, json.dumps({'role': 'user'})))
+con.execute("INSERT INTO part VALUES ('po1', 'mo1', ?, ?, ?, ?)",
+            (OLD, base, base, json.dumps({'type': 'text', 'text': 'old prompt'})))
+for sid, parent, d, t in ((OLD, None, '/srv/old', base + 1000), (NEW, None, '/srv/new', base + 9000),
+                          (KID, NEW, '/srv/new', base + 8000)):
+    con.execute("INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated)"
+                " VALUES (?,?,?,?,?,?)", (sid, parent, d, 't', base, t))
+    con.execute("INSERT INTO event_sequence VALUES (?, 3, NULL)", (sid,))
+    con.execute("INSERT INTO instruction_state VALUES (?, 0, 1, '{}', '{}')", (sid,))
+msgs = [
+    (OLD, 'user', {'text': 'old prompt'}),
+    (NEW, 'system', {'text': 'The bash tool is now shell — injected v2marker'}),
+    (NEW, 'user', {'text': 'fix the v2marker in config'}),
+    (NEW, 'synthetic', {'text': 'The server restarted v2marker'}),
+    (NEW, 'assistant', {'content': [
+        {'type': 'reasoning', 'text': 'look at v2marker'},
+        {'type': 'tool', 'id': 'c1', 'name': 'write',
+         'state': {'status': 'completed', 'input': {'path': '/srv/new/app.conf', 'content': 'x'},
+                   'content': [{'type': 'text', 'text': 'wrote'}]}},
+        {'type': 'tool', 'id': 'c2', 'name': 'shell',
+         'state': {'status': 'completed', 'input': {'command': 'git commit -m "new: v2 config"'},
+                   'content': [{'type': 'text', 'text': 'v2marker committed'}]}},
+        {'type': 'text', 'text': 'Done, v2marker fixed.'}]}),
+    (NEW, 'idle', {'outcome': 'succeeded'}),
+    (KID, 'user', {'text': 'subagent v2marker'}),
+]
+for i, (sid, typ, data) in enumerate(msgs):
+    con.execute("INSERT INTO session_message VALUES (?,?,?,?,?,?,?)",
+                ('msg_%04d' % i, sid, typ, i, base + i * 100, base + i * 100, json.dumps(data)))
+con.commit()
+PY
+oc2() { OPENCODE_DATA_DIR="$V2" IDE_SESSIONS_REDACTOR='' "$ROOT/bin/opencode-sessions" "$@" 2>&1; }
+
+out="$(oc2 --about-min 1)"
+contains "opencode 2.x: a session only in session_v2 is listed"   "$out" "ses_v2new000000000000000002"
+contains "opencode 2.x: the copied old session too"               "$out" "ses_v2old000000000000000001"
+if [ "$(printf '%s\n' "$out" | grep -c '^ses_v2old')" = 1 ]; then ok "opencode 2.x: ... once"
+else nope "opencode 2.x: ... once" "$(printf '%s\n' "$out" | grep '^ses_v2old')"; fi
+if [ "$(printf '%s\n' "$out" | awk '$1 == "ses_v2new000000000000000002" { print $4 }')" = 3 ]; then
+    ok "opencode 2.x: MSGS counts user, assistant and synthetic, not system or idle"
+else nope "opencode 2.x: MSGS counts user, assistant and synthetic, not system or idle" "$out"; fi
+contains "opencode 2.x: ABOUT reads write with path and the shell commit" "$out" "commit: new: v2 config; edit app.conf"
+
+out="$(oc2 --search v2marker)"
+row="$(printf '%s\n' "$out" | awk '$1 == "ses_v2new000000000000000002" { print $5 "/" $6 "/" $7 }')"
+if [ "$row" = 1/2/1 ]; then ok "opencode 2.x: search counts prompt, reasoning+text, tool output; not system or synthetic"
+else nope "opencode 2.x: search counts prompt, reasoning+text, tool output; not system or synthetic" "$row"; fi
+
+out="$(oc2 --sum ses_v2new000000000000000002 --sum-raw)"
+contains "opencode 2.x: the digest has the prompt"                "$out" "ASKED: fix the v2marker in config"
+contains "opencode 2.x: ... the answer"                           "$out" "DONE: Done, v2marker fixed."
+contains "opencode 2.x: ... and shell counted as bash"            "$out" "bash x1"
+
+out="$(env -u CLAUDE_CODE_SESSION_ID -u CODEX_THREAD_ID -u OPENCODE TZ=UTC OPENCODE_DATA_DIR="$V2" \
+    CLAUDE_CONFIG_DIR="$TMP/none" CODEX_HOME="$TMP/none" XDG_STATE_HOME="$TMP/state" \
+    "$ROOT/bin/ide-history" sessions --ide opencode 2>&1)"
+contains "opencode 2.x: ide-history lists a session_v2 session"  "$out" "ses_v2new000000000000000002"
+out="$(env -u CLAUDE_CODE_SESSION_ID -u CODEX_THREAD_ID -u OPENCODE TZ=UTC OPENCODE_DATA_DIR="$V2" \
+    CLAUDE_CONFIG_DIR="$TMP/none" CODEX_HOME="$TMP/none" XDG_STATE_HOME="$TMP/state" \
+    "$ROOT/bin/ide-history" --id ses_v2new --full 2>&1)"
+contains "opencode 2.x: ide-history shows its conversation"      "$out" "Done, v2marker fixed."
+absent   "opencode 2.x: ... without the injected system text"    "$out" "injected v2marker"
+
+out="$(oc2 --rm ses_v2new000000000000000002 --yes --trash "$TMP/v2trash")"
+contains "opencode 2.x: --rm takes the child session along"      "$out" "1 selected + 1 child session(s) = 2 total"
+contains "opencode 2.x: --rm counts the new tables"              "$out" "session_message"
+left="$(python3 -c '
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+n = 0
+for t, k in (("session_v2", "id"), ("session_message", "session_id"), ("event_sequence", "aggregate_id"), ("instruction_state", "session_id")):
+    n += con.execute("SELECT COUNT(*) FROM %s WHERE %s LIKE ?" % (t, k), ("ses_v2new%",)).fetchone()[0]
+    n += con.execute("SELECT COUNT(*) FROM %s WHERE %s LIKE ?" % (t, k), ("ses_v2kid%",)).fetchone()[0]
+print(n)' "$V2/opencode.db")"
+if [ "$left" = 0 ]; then ok "opencode 2.x: --rm leaves no row of it in any table"
+else nope "opencode 2.x: --rm leaves no row of it in any table" "$left rows left"; fi
+dump="$(ls "$TMP"/v2trash/opencode-*/rows.sql 2>/dev/null | head -1)"
+if [ -n "$dump" ] && grep -q 'INSERT INTO session_v2' "$dump" && grep -q 'INSERT INTO event_sequence' "$dump"; then
+    ok "opencode 2.x: the dump holds the new tables, to restore from"
+else nope "opencode 2.x: the dump holds the new tables, to restore from" "${dump:-no dump}"; fi
+contains "opencode 2.x: the old session stays"                    "$(oc2)" "ses_v2old000000000000000001"
+
+# The views are written twice, in opencode-sessions and in ide-history; a test
+# keeps the copies equal.
+v_oc="$(sed -n '/^export OC_V2_VIEWS="/,/^"$/p' "$ROOT/bin/opencode-sessions" | sed '1d;$d' | sed 's/\\\$/$/g')"
+v_ih="$(sed -n '/^OC_V2_VIEWS = """/,/^"""$/p' "$ROOT/bin/ide-history" | sed '1d;$d')"
+if [ -n "$v_oc" ] && [ "$v_oc" = "$v_ih" ]; then ok "opencode 2.x: the two copies of the views are identical"
+else nope "opencode 2.x: the two copies of the views are identical"; fi
+
 # ── colours ─────────────────────────────────────────────────────────────────
 # On a terminal: the session id bright green, the directory bright cyan, a long
 # session's count bright yellow (above 1000 turns; above 100 messages in

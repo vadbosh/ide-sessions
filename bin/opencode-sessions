@@ -55,8 +55,47 @@ SUM_REFRESH=0
 SUM_RAW=0
 SUM_LANG=en
 
-# Every table keyed by session_id; `session` itself is keyed by id.
-CHILD_TABLES="part message todo session_share session_message session_context_epoch session_input"
+# Every table that holds a session's rows, as table:key, children first and the
+# sessions themselves last. opencode 2.x adds session_v2 and session_message,
+# the event log keyed by aggregate_id, and a handful of per-session tables.
+DEL_TABLES="part:session_id message:session_id todo:session_id session_share:session_id
+  session_message:session_id session_part:session_id session_inbox:session_id
+  session_context_epoch:session_id session_input:session_id
+  instruction_entry:session_id instruction_state:session_id blob_ref:session_id
+  schedule:session_id event:aggregate_id event_sequence:aggregate_id
+  session:id session_v2:id"
+
+# opencode 2.x keeps sessions in session_v2 and messages in session_message,
+# with the parts of an answer inside each message's data.content; the old
+# session, message and part tables keep only what an older version wrote, and
+# every old session was copied over. Where session_v2 exists, each reading
+# connection gets TEMP views named like the old tables — a temp name shadows
+# the main one in SQLite — so every query reads the new tables in the old
+# shape. Tool names and fields follow 2.x (`shell`, `path`, `state.content`);
+# the readers accept both spellings. Deleting and dumping use the real tables.
+export OC_V2_VIEWS="
+CREATE TEMP VIEW IF NOT EXISTS session AS SELECT * FROM main.session_v2;
+CREATE TEMP VIEW IF NOT EXISTS message AS
+  SELECT id, session_id, time_created, time_updated,
+         json_object('role', CASE type WHEN 'assistant' THEN 'assistant' ELSE 'user' END) AS data
+  FROM main.session_message WHERE type IN ('user', 'assistant', 'synthetic');
+CREATE TEMP VIEW IF NOT EXISTS part AS
+  SELECT id || '_0000' AS id, id AS message_id, session_id, time_created, time_updated,
+         json_object('type', 'text', 'text', json_extract(data, '\$.text'),
+                     'synthetic', json(CASE type WHEN 'synthetic' THEN 'true' ELSE 'false' END)) AS data
+  FROM main.session_message WHERE type IN ('user', 'synthetic')
+  UNION ALL
+  SELECT m.id || printf('_%04d', c.key + 1), m.id, m.session_id, m.time_created, m.time_updated,
+         CASE json_extract(c.value, '\$.type')
+           WHEN 'tool' THEN json_object('type', 'tool',
+                'tool', CASE json_extract(c.value, '\$.name') WHEN 'shell' THEN 'bash'
+                        ELSE json_extract(c.value, '\$.name') END,
+                'state', json_object(
+                    'input', json(coalesce(json_extract(c.value, '\$.state.input'), '{}')),
+                    'output', json(coalesce(json_extract(c.value, '\$.state.content'), '[]'))))
+           ELSE c.value END
+  FROM main.session_message m, json_each(m.data, '\$.content') c WHERE m.type = 'assistant';
+"
 
 usage() {
   cat <<'EOF'
@@ -254,6 +293,9 @@ db_tsv() {
   python3 - "$DB" "$@" <<'PY'
 import sqlite3, sys
 con = sqlite3.connect(sys.argv[1], timeout=10)
+# opencode 2.x: the old table names as TEMP views over the new tables.
+if con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_v2'").fetchone():
+    con.executescript(__import__('os').environ.get('OC_V2_VIEWS', ''))
 for row in con.execute(sys.argv[2], sys.argv[3:]):
     print('\t'.join('' if v is None else str(v) for v in row))
 PY
@@ -263,6 +305,9 @@ db_tsv_ids() {
   python3 - "$DB" "$1" "$2" <<'PY'
 import sqlite3, sys
 con = sqlite3.connect(sys.argv[1], timeout=10)
+# opencode 2.x: the old table names as TEMP views over the new tables.
+if con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_v2'").fetchone():
+    con.executescript(__import__('os').environ.get('OC_V2_VIEWS', ''))
 ids = [l for l in sys.argv[3].splitlines() if l.strip()]
 sql = sys.argv[2].replace('{ids}', ','.join('?' * len(ids)))
 for row in con.execute(sql, ids):
@@ -274,20 +319,20 @@ PY
 # between versions, and a table named here that is missing there would abort a
 # delete over rows that do not exist — `no such table: todo` for a session with
 # no todos.
-CHILD_TABLES=$(python3 - "$DB" "$CHILD_TABLES" <<'PY'
+DEL_TABLES=$(python3 - "$DB" "$DEL_TABLES" <<'PY'
 import sqlite3, sys
 con = sqlite3.connect(sys.argv[1], timeout=10)
 have = {r[0] for r in con.execute(
     "SELECT name FROM sqlite_master WHERE type = 'table'")}
-print(' '.join(t for t in sys.argv[2].split() if t in have))
+print(' '.join(t for t in sys.argv[2].split() if t.split(':')[0] in have))
 PY
 )
 
-# Delete the sessions whose ids are the lines of $1, with their rows in
-# $CHILD_TABLES, in one transaction. The ids are bound parameters; the table
-# names come from CHILD_TABLES, already checked against sqlite_master above.
+# Delete the sessions whose ids are the lines of $1 from every table in
+# $DEL_TABLES, in one transaction. The ids are bound parameters; the table and
+# key names come from DEL_TABLES, already checked against sqlite_master above.
 db_delete_ids() {
-  python3 - "$DB" "$1" "$CHILD_TABLES" <<'PY'
+  python3 - "$DB" "$1" "$DEL_TABLES" <<'PY'
 import sqlite3, sys
 con = sqlite3.connect(sys.argv[1], timeout=10, isolation_level=None)
 ids = [l for l in sys.argv[2].splitlines() if l.strip()]
@@ -295,9 +340,9 @@ if ids:
     ph = ','.join('?' * len(ids))
     con.execute('BEGIN IMMEDIATE')
     try:
-        for t in sys.argv[3].split():
-            con.execute('DELETE FROM "%s" WHERE session_id IN (%s)' % (t, ph), ids)
-        con.execute('DELETE FROM session WHERE id IN (%s)' % ph, ids)
+        for tk in sys.argv[3].split():
+            t, k = tk.split(':')
+            con.execute('DELETE FROM main."%s" WHERE "%s" IN (%s)' % (t, k, ph), ids)
         con.execute('COMMIT')
     except Exception:
         con.execute('ROLLBACK')
@@ -421,6 +466,9 @@ import json, re, sqlite3, sys, datetime
 db, sid, gap_min = sys.argv[1], sys.argv[2], int(sys.argv[3])
 gap = gap_min * 60
 con = sqlite3.connect(db, timeout=10)
+# opencode 2.x: the old table names as TEMP views over the new tables.
+if con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_v2'").fetchone():
+    con.executescript(__import__('os').environ.get('OC_V2_VIEWS', ''))
 
 row = con.execute("SELECT directory FROM session WHERE id = ?", (sid,)).fetchone()
 if row is None and sid not in ('--about', '--search'):
@@ -840,9 +888,10 @@ def about_events(f):
             inp = (d.get('state') or {}).get('input') or {}
             tool = d.get('tool')
             if tool == 'write':
-                events.append(('write', inp.get('filePath') or '', inp.get('content') or ''))
+                events.append(('write', inp.get('filePath') or inp.get('path') or '',
+                               inp.get('content') or ''))
             elif tool in ('edit', 'multiedit'):
-                events.append(('edit', inp.get('filePath') or '', ''))
+                events.append(('edit', inp.get('filePath') or inp.get('path') or '', ''))
             elif tool == 'bash':
                 events.append(('cmd', inp.get('command') or '', ''))
             elif tool in ('patch', 'apply_patch'):
@@ -1630,6 +1679,9 @@ if [ "$DELETE_MODE" = 1 ]; then
   python3 - "$DB" "$seeds" > "$ids_file" <<'PY'
 import sqlite3, sys
 con = sqlite3.connect(sys.argv[1], timeout=10)
+# opencode 2.x: the old table names as TEMP views over the new tables.
+if con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_v2'").fetchone():
+    con.executescript(__import__('os').environ.get('OC_V2_VIEWS', ''))
 seeds = [s.strip() for s in sys.argv[2].splitlines() if s.strip()]
 con.execute("CREATE TEMP TABLE seed(id TEXT)")
 con.executemany("INSERT INTO seed VALUES (?)", [(s,) for s in seeds])
@@ -1681,11 +1733,10 @@ PY
 
   echo
   echo "Row counts to be removed:"
-  for t in $CHILD_TABLES; do
-    c=$(db_tsv_ids "SELECT COUNT(*) FROM \"$t\" WHERE session_id IN ({ids});" "$ids")
-    [ "$c" = 0 ] || printf '  %-24s %s\n' "$t" "$c"
+  for tk in $DEL_TABLES; do
+    c=$(db_tsv_ids "SELECT COUNT(*) FROM main.\"${tk%%:*}\" WHERE \"${tk#*:}\" IN ({ids});" "$ids")
+    [ "$c" = 0 ] || printf '  %-24s %s\n' "${tk%%:*}" "$c"
   done
-  printf '  %-24s %s\n' "session" "$n_total"
 
   echo
   if [ "$n_total" -gt "$n_seeds" ]; then
@@ -1730,7 +1781,7 @@ PY
   # Dump before deleting: the DB is too big to copy wholesale for every prune.
   # This replaces the CLI's `.mode insert`, quoting values the same way sqlite
   # does so the dump can be replayed with either tool.
-  python3 - "$DB" "$dump" "$stamp" "session $CHILD_TABLES" "$ids" <<'PY'
+  python3 - "$DB" "$dump" "$stamp" "$DEL_TABLES" "$ids" <<'PY'
 import sqlite3, sys
 
 db, out_path, stamp, tables, ids = sys.argv[1:6]
@@ -1750,9 +1801,9 @@ def literal(v):
 with open(out_path, 'w') as out:
     out.write('-- opencode session rows removed %s\n' % stamp)
     out.write('BEGIN;\n')
-    for t in tables.split():
-        col = 'id' if t == 'session' else 'session_id'
-        cur = con.execute('SELECT * FROM "%s" WHERE %s IN (%s)' % (t, col, ph), ids)
+    for tk in tables.split():
+        t, col = tk.split(':')
+        cur = con.execute('SELECT * FROM main."%s" WHERE "%s" IN (%s)' % (t, col, ph), ids)
         names = [d[0] for d in cur.description]
         for row in cur:
             out.write('INSERT INTO %s(%s) VALUES(%s);\n'

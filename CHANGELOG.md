@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.18.4
+
+- **`opencode-sessions` did not see the sessions of opencode 2.x.** 2.x keeps
+  sessions in `session_v2` and messages in `session_message`, the parts of an
+  answer inside each message's `data.content`; the old `session`, `message`
+  and `part` hold only what an older version wrote. On opencode 2.2.3 the list
+  showed 2 sessions of 27, and `--search`, `--sum`, ABOUT and `--rm` missed
+  the rest; `ide-history` likewise. Where `session_v2` exists, every reading
+  connection now gets TEMP views named like the old tables over the new ones
+  (a temp name shadows the main one in SQLite), so every query reads 2.x in
+  the old shape; tool names and fields follow 2.x (`shell`, `path`,
+  `state.content`). `--rm` deletes from the old and new tables alike, keyed
+  per table — `session_v2`, `session_message`, `instruction_state`,
+  `event_sequence` and the rest — and dumps them first. On an older opencode
+  nothing changes. 18 tests on a 2.x fixture; 14 fail on 0.18.3.
+
 ## 0.18.3
 
 - **After `reptyr -T` the list advised killing the sshd under the session just
