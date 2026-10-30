@@ -869,6 +869,16 @@ into their session: it stays one row, with `+N agents` in the ABOUT column, and
 `--rm` moves their rollouts too. A subagent whose session rollout is gone is
 listed under its own id.
 
+The rollout is not all Codex keeps. Codex 0.16x writes the conversation again
+into `~/.codex/thread_history_N.sqlite`, the thread into `state_N.sqlite` (what
+`codex resume` offers), and more into its logs, goals, memories and queue, plus
+a line in `session_index.jsonl` and every prompt in `history.jsonl`. `--rm`
+removes all of it: every table in `~/.codex/*.sqlite` with a column named
+`thread_id`, `parent_thread_id` or `child_thread_id`, `threads` by id, and the
+two jsonl files, rewritten in place. The dry run counts these records. Before
+deleting, they are dumped into the trash dir under `.records/`, which
+`cp -a <trash>/* /` skips; the commands that put them back are printed.
+
 ### Why an old session is missing
 
 Only Claude Code deletes anything. It prunes transcripts older than

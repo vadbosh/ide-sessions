@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.19.1
+
+- **`codex-sessions --rm` left the session behind in Codex's own records.** It
+  moved the rollout, but Codex 0.16x also writes the conversation into
+  `thread_history_N.sqlite`, the thread into `state_N.sqlite` (the `codex
+  resume` picker), and rows into logs, goals, memories and queue, plus
+  `session_index.jsonl` and `history.jsonl`. A deleted session's whole
+  conversation stayed on disk, and its prompts in `ide-history`. `--rm` now
+  removes them: every table in `~/.codex/*.sqlite` with a column named
+  `thread_id`, `parent_thread_id` or `child_thread_id`, `threads` by id —
+  found by name, so a renumbered database is covered — and the two jsonl
+  files, rewritten in place under `flock`. The session's subagents go along.
+  The dry run counts the records; they are dumped into the trash under
+  `.records/` first, and the restore commands are printed. Seen on a deleted
+  probe session: 55 log rows, 1 thread, 8 history rows, 3 jsonl lines.
+
 ## 0.19.0
 
 - **`codex-procs` and `opencode-procs`: `claude-procs` for the other two

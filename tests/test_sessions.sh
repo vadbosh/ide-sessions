@@ -1833,6 +1833,69 @@ v_ih="$(sed -n '/^OC_V2_VIEWS = """/,/^"""$/p' "$ROOT/bin/ide-history" | sed '1d
 if [ -n "$v_oc" ] && [ "$v_oc" = "$v_ih" ]; then ok "opencode 2.x: the two copies of the views are identical"
 else nope "opencode 2.x: the two copies of the views are identical"; fi
 
+# ── codex-sessions --rm: the records beside the rollout ─────────────────────
+# Codex keeps a thread in its sqlite stores (state, thread_history with the
+# whole conversation again, logs, …) and in session_index.jsonl and
+# history.jsonl. --rm takes all of it, dumps it first, and leaves other
+# threads alone.
+echo "codex-sessions --rm records"
+CR="$TMP/codex-records"
+mkdir -p "$CR/sessions/2026/03/06"
+GONE="01a00000-0000-7000-8000-0000000000e1"; STAY="01a00000-0000-7000-8000-0000000000e2"
+python3 - "$CR" "$GONE" "$STAY" <<'PY'
+import json, sqlite3, sys
+cr, gone, stay = sys.argv[1:4]
+for sid in (gone, stay):
+    with open("%s/sessions/2026/03/06/rollout-2026-03-06T10-00-00-%s.jsonl" % (cr, sid), "w") as fh:
+        fh.write(json.dumps({"timestamp": "2026-03-06T10:00:00.000Z", "type": "session_meta",
+                             "payload": {"id": sid, "cwd": "/srv/r"}}) + "\n")
+con = sqlite3.connect(cr + "/state_5.sqlite")
+con.executescript("""CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT);
+CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT, status TEXT);
+CREATE TABLE rollout_migration_state (migration_id TEXT, last_checked_thread_id TEXT);""")
+con.executemany("INSERT INTO threads VALUES (?, '/srv/r')", [(gone,), (stay,)])
+con.execute("INSERT INTO thread_spawn_edges VALUES (?, 'child-x', 'done')", (gone,))
+con.execute("INSERT INTO rollout_migration_state VALUES ('m1', ?)", (gone,))
+con.commit()
+con = sqlite3.connect(cr + "/thread_history_1.sqlite")
+con.execute("CREATE TABLE thread_items (thread_id TEXT, body TEXT)")
+con.executemany("INSERT INTO thread_items VALUES (?, ?)", [(gone, "secret talk"), (gone, "more"), (stay, "keep me")])
+con.commit()
+with open(cr + "/session_index.jsonl", "w") as fh:
+    for sid in (gone, stay):
+        fh.write(json.dumps({"id": sid, "thread_name": "t"}) + "\n")
+with open(cr + "/history.jsonl", "w") as fh:
+    for sid, text in ((gone, "gone prompt"), (stay, "stay prompt"), (gone, "gone again")):
+        fh.write(json.dumps({"session_id": sid, "ts": 1, "text": text}) + "\n")
+PY
+cxr() { CODEX_HOME="$CR" IDE_SESSIONS_REDACTOR='' "$ROOT/bin/codex-sessions" "$@" 2>&1; }
+out="$(cxr --rm "$GONE" --dry-run)"
+contains "codex --rm: the dry run names the records too"     "$out" "thread_history_1.sqlite thread_items"
+contains "codex --rm: ... and the prompt lines"               "$out" "history.jsonl"
+out="$(cxr --rm "$GONE" --yes --trash "$TMP/cr-trash")"
+q() { python3 -c 'import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute(sys.argv[2], sys.argv[3:]).fetchone()[0])' "$@"; }
+if [ "$(q "$CR/state_5.sqlite" 'SELECT COUNT(*) FROM threads WHERE id = ?' "$GONE")" = 0 ] &&
+   [ "$(q "$CR/thread_history_1.sqlite" 'SELECT COUNT(*) FROM thread_items WHERE thread_id = ?' "$GONE")" = 0 ] &&
+   [ "$(q "$CR/state_5.sqlite" 'SELECT COUNT(*) FROM thread_spawn_edges WHERE parent_thread_id = ?' "$GONE")" = 0 ]; then
+    ok "codex --rm: its thread, conversation and edges leave the databases"
+else nope "codex --rm: its thread, conversation and edges leave the databases" "$out"; fi
+if [ "$(q "$CR/thread_history_1.sqlite" 'SELECT COUNT(*) FROM thread_items WHERE thread_id = ?' "$STAY")" = 1 ] &&
+   [ "$(q "$CR/state_5.sqlite" 'SELECT COUNT(*) FROM threads WHERE id = ?' "$STAY")" = 1 ] &&
+   [ "$(q "$CR/state_5.sqlite" 'SELECT COUNT(*) FROM rollout_migration_state')" = 1 ]; then
+    ok "codex --rm: other threads, and a column that only mentions a thread, stay"
+else nope "codex --rm: other threads, and a column that only mentions a thread, stay"; fi
+absent   "codex --rm: its prompts leave history.jsonl"        "$(cat "$CR/history.jsonl")" "gone"
+contains "codex --rm: ... the others stay"                    "$(cat "$CR/history.jsonl")" "stay prompt"
+absent   "codex --rm: its line leaves session_index.jsonl"    "$(cat "$CR/session_index.jsonl")" "$GONE"
+tr="$(ls -d "$TMP"/cr-trash/codex-* | head -1)"
+if [ -s "$tr/.records/${CR#/}/thread_history_1.sqlite.rows.sql" ] && [ -s "$tr/.records/${CR#/}/history.jsonl.removed" ]; then
+    ok "codex --rm: the records are dumped under .records first"
+else nope "codex --rm: the records are dumped under .records first" "$(find "$tr" -type f)"; fi
+if [ -z "$(find "$tr" -path "$tr/.records" -prune -o -name '*.rows.sql' -print)" ]; then
+    ok "codex --rm: cp -a TRASH/* / restores files without dumps"
+else nope "codex --rm: cp -a TRASH/* / restores files without dumps"; fi
+contains "codex --rm: the restore commands are printed"       "$out" "Restore the records:"
+
 # ── colours ─────────────────────────────────────────────────────────────────
 # On a terminal: the session id bright green, the directory bright cyan, a long
 # session's count bright yellow (above 1000 turns; above 100 messages in

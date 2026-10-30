@@ -1648,6 +1648,120 @@ fi
 # The best search matches go last, next to the prompt; -n above kept the best.
 [ -n "$SEARCH" ] && rows=$(printf '%s\n' "$rows" | tac)
 
+# codex_records report|apply IDS_FILE [TRASH] — what Codex keeps about these
+# threads beside the rollout: since 0.16x the conversation again in
+# thread_history_N.sqlite, the thread in state_N.sqlite (what `codex resume`
+# lists), goals, memories, queue and logs, one line per thread in
+# session_index.jsonl and every prompt in history.jsonl. Found by column name —
+# thread_id, parent_thread_id, child_thread_id, and id in `threads` — in every
+# ~/.codex/*.sqlite, so a renumbered database is still covered. report prints
+# the counts; apply dumps the rows into TRASH first (INSERT statements, the
+# removed jsonl lines), then deletes them. The jsonl files are rewritten in
+# place under flock: the app-server may hold them open.
+codex_records() {
+  python3 - "$1" "$CODEX_HOME" "$2" "${3:-}" <<'PY'
+import fcntl, glob, json, os, sqlite3, sys
+
+mode, home, ids_file, trash = sys.argv[1:5]
+ids = sorted({l.strip() for l in open(ids_file) if l.strip()})
+if not ids:
+    sys.exit(0)
+ph = ','.join('?' * len(ids))
+KEYS = ('thread_id', 'parent_thread_id', 'child_thread_id')
+
+
+def literal(v):
+    if v is None:
+        return 'NULL'
+    if isinstance(v, (int, float)):
+        return repr(v)
+    if isinstance(v, bytes):
+        return "X'%s'" % v.hex()
+    return "'%s'" % str(v).replace("'", "''")
+
+
+def dest(path, suffix):
+    out = os.path.join(trash, '.records', path.lstrip('/')) + suffix
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    return os.fdopen(fd, 'a')
+
+
+lines, restore = [], []
+for db in sorted(glob.glob(os.path.join(home, '*.sqlite'))):
+    try:
+        con = sqlite3.connect(db, timeout=10, isolation_level=None)
+        plan = []
+        for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'"):
+            cols = [r[1] for r in con.execute('PRAGMA table_info("%s")' % t)]
+            keys = [c for c in cols if c in KEYS] + (['id'] if t == 'threads' and 'id' in cols else [])
+            if not keys:
+                continue
+            where = ' OR '.join('"%s" IN (%s)' % (k, ph) for k in keys)
+            n = con.execute('SELECT COUNT(*) FROM "%s" WHERE %s' % (t, where), ids * len(keys)).fetchone()[0]
+            if n:
+                plan.append((t, where, ids * len(keys), n))
+    except sqlite3.Error as e:
+        lines.append('  ! %s: %s' % (os.path.basename(db), e))
+        continue
+    for t, _, _, n in plan:
+        lines.append('  %-56s %s' % ('%s %s' % (os.path.basename(db), t), n))
+    if mode != 'apply' or not plan:
+        continue
+    with dest(db, '.rows.sql') as out:
+        out.write('BEGIN;\n')
+        for t, where, params, _ in plan:
+            cur = con.execute('SELECT * FROM "%s" WHERE %s' % (t, where), params)
+            names = [d[0] for d in cur.description]
+            for row in cur:
+                out.write('INSERT OR IGNORE INTO "%s"(%s) VALUES(%s);\n'
+                          % (t, ','.join('"%s"' % c for c in names), ','.join(literal(v) for v in row)))
+        out.write('COMMIT;\n')
+    con.execute('BEGIN IMMEDIATE')
+    try:
+        for t, where, params, _ in plan:
+            con.execute('DELETE FROM "%s" WHERE %s' % (t, where), params)
+        con.execute('COMMIT')
+    except Exception:
+        con.execute('ROLLBACK')
+        raise
+    restore.append('python3 -c "import sqlite3;sqlite3.connect(\'%s\').executescript(open(\'%s\').read())"'
+                   % (db, os.path.join(trash, '.records', db.lstrip('/')) + '.rows.sql'))
+
+want = set(ids)
+for name, key in (('session_index.jsonl', 'id'), ('history.jsonl', 'session_id')):
+    path = os.path.join(home, name)
+    if not os.path.isfile(path):
+        continue
+    with open(path, 'r+', encoding='utf-8', errors='surrogateescape') as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        keep, drop = [], []
+        for line in fh:
+            try:
+                hit = json.loads(line).get(key) in want
+            except (ValueError, AttributeError):
+                hit = False
+            (drop if hit else keep).append(line)
+        if drop:
+            lines.append('  %-56s %s' % (name, len(drop)))
+        if mode == 'apply' and drop:
+            with dest(path, '.removed') as out:
+                out.writelines(drop)
+            fh.seek(0)
+            fh.writelines(keep)
+            fh.truncate()
+            restore.append('cat %s >> %s' % (os.path.join(trash, '.records', path.lstrip('/')) + '.removed', path))
+
+if lines:
+    print('Records Codex keeps about them (rows / lines):')
+    print('\n'.join(lines))
+if restore:
+    print('Restore the records:')
+    for r in restore:
+        print('  ' + r)
+PY
+}
+
 if [ "$DELETE_MODE" = 1 ]; then
   candidates=$(printf '%s\n' "$rows" | awk -F'\t' \
       -v ids="$RM_IDS" -v older="$OLDER_THAN" -v maxt="$MAX_TURNS" -v all="$RM_ALL" -v now="$now" '
@@ -1707,8 +1821,16 @@ if [ "$DELETE_MODE" = 1 ]; then
   [ -n "$total" ] || total=0
   human=$(numfmt --to=iec --suffix=B "$total" 2>/dev/null || echo "${total}B")
 
+  # The thread ids: the sessions, and their subagents from the rollout names.
+  ids_file=$(mktemp)
+  trap 'rm -f "$tmpfile" "$agents_file" "$paths_file" "$ids_file"' EXIT
+  printf '%s\n' "$candidates" | cut -f2 > "$ids_file"
+  sed -n 's/.*rollout-.*-\([0-9a-f]\{8\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{12\}\)\.jsonl$/\1/p' \
+    "$paths_file" >> "$ids_file"
+
   echo
   echo "$count session(s), $npaths file(s), $human total."
+  codex_records report "$ids_file" || true
 
   if [ "$DRY_RUN" = 1 ] || { [ "$BULK" = 1 ] && [ "$APPLY" != 1 ]; }; then
     echo
@@ -1757,6 +1879,7 @@ if [ "$DELETE_MODE" = 1 ]; then
   echo "Deleted $count session(s): $moved file(s) moved to"
   echo "  $trash"
   echo
+  codex_records apply "$ids_file" "$trash" || echo "  ! the records in $CODEX_HOME could not all be removed" >&2
   echo "Restore everything:  cp -a $trash/* /"
   echo "Free the space:       delete that trash dir once you are sure"
   exit 0
