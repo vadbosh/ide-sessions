@@ -2174,6 +2174,93 @@ if command -v script >/dev/null 2>&1; then
     gone "$P_T" || nope "claude-procs: the reptyr fake is gone after the test"
 fi
 
+# ── codex-procs, opencode-procs ─────────────────────────────────────────────
+# The same fake as for claude-procs, under names of their own. The session of
+# a window is found by its directory in the IDE's database (updated since the
+# window started), or named in argv; the background server is not a window.
+echo "codex-procs, opencode-procs"
+mkdir -p "$TMP/px/work" "$TMP/px/codex" "$TMP/px/oc"
+PX_CX="cxpt$$"; PX_CX="${PX_CX:0:15}"; PX_OC="ocpt$$"; PX_OC="${PX_OC:0:15}"
+cp "$TMP/cp/bin/$CP_COMM" "$TMP/px/$PX_CX"; cp "$TMP/cp/bin/$CP_COMM" "$TMP/px/$PX_OC"
+px_start() {   # px_start BIN NAME [ARGS…] — prints the pid
+    local bin="$1" name="$2"; shift 2
+    (cd "$TMP/px/work" || exit; CP_PIDFILE="$TMP/px/$name.pid" CP_DRAFT="$TMP/cp/prompts/claude-prompt-m.md" \
+        setsid "$TMP/px/$bin" "$@" </dev/null >/dev/null 2>&1 &)
+    local i; for i in $(seq 50); do [ -s "$TMP/px/$name.pid" ] && break; sleep 0.1; done
+    cat "$TMP/px/$name.pid"
+}
+CX_A="$(px_start "$PX_CX" cxa --yolo)"
+CX_R="$(px_start "$PX_CX" cxr -m o3 resume 01a00000-0000-7000-8000-00000000r00b)"
+CX_D="$(px_start "$PX_CX" cxd app-server --listen unix://)"
+OC_A="$(px_start "$PX_OC" oca --model m1)"
+OC_S="$(px_start "$PX_OC" ocs -s ses_named0000000000000000001)"
+OC_D="$(px_start "$PX_OC" ocd serve --service)"
+sleep 1
+python3 - "$TMP/px" "$TMP/px/work" <<'PY'
+import sqlite3, sys, time
+px, work = sys.argv[1], sys.argv[2]
+now = int(time.time())
+con = sqlite3.connect(px + "/codex/state_5.sqlite")
+con.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT, title TEXT, created_at INTEGER, updated_at INTEGER, archived INTEGER)")
+con.executemany("INSERT INTO threads VALUES (?,?,?,?,?,0)", [
+    ("01a00000-0000-7000-8000-0000000old00", work, "older thread", now - 86400, now - 86400),
+    ("01a00000-0000-7000-8000-0000000new00", work, "fix the  parser", now, now),
+    ("01a00000-0000-7000-8000-00000000r00b", "/elsewhere", "resumed one", now - 9000, now - 9000)])
+con.commit()
+con = sqlite3.connect(px + "/oc/opencode.db")
+con.execute("CREATE TABLE session_v2 (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, title TEXT, time_created INTEGER, time_updated INTEGER)")
+con.executemany("INSERT INTO session_v2 VALUES (?,?,?,?,?,?)", [
+    ("ses_old0000000000000000000001", None, work, "old one", (now - 86400) * 1000, (now - 86400) * 1000),
+    ("ses_new0000000000000000000002", None, work, "index page", now * 1000, now * 1000),
+    ("ses_kid0000000000000000000003", "ses_new0000000000000000000002", work, "child", now * 1000, now * 1000 + 5),
+    ("ses_named0000000000000000001", None, "/elsewhere", "named one", 1, 1)])
+con.commit()
+PY
+CX="$ROOT/bin/codex-procs"; OCP="$ROOT/bin/opencode-procs"
+cx() { CODEX_PROCS_COMM="$PX_CX" CODEX_HOME="$TMP/px/codex" "$CX" "$@" 2>&1; }
+ocp() { OPENCODE_PROCS_COMM="$PX_OC" OPENCODE_DATA_DIR="$TMP/px/oc" "$OCP" "$@" 2>&1; }
+
+out="$(cx)"
+contains "codex-procs: the window's session is the thread of its directory, updated since it started" \
+    "$(printf '%s\n' "$out" | grep "^$CX_A ")" "01a00000  fix the parser"
+contains "codex-procs: codex resume <id> in argv names the session" "$(printf '%s\n' "$out" | grep "^$CX_R ")" "01a00000  resumed one"
+absent   "codex-procs: the app-server is not a window"             "$out" "$CX_D"
+contains "codex-procs: no terminal is said in codex's words"       "$out" "a script's codex exec"
+kill -STOP "$CX_R"; sleep 0.2
+out="$(cx resume "$CX_R" -n)"
+contains "codex-procs: resume keeps the options and resumes the id" "$out" "$PX_CX -m o3 resume 01a00000-0000-7000-8000-00000000r00b"
+absent   "codex-procs: ... with one resume, not two"               "$out" "resume 01a00000-0000-7000-8000-00000000r00b resume"
+contains "codex-procs: the stopped one offers codex-procs resume"  "$(cx)" "codex-procs resume $CX_R"
+
+out="$(ocp)"
+contains "opencode-procs: the window's session is the one of its directory, updated since it started" \
+    "$(printf '%s\n' "$out" | grep "^$OC_A ")" "ses_new0  index page"
+contains "opencode-procs: -s <id> in argv names the session"      "$(printf '%s\n' "$out" | grep "^$OC_S ")" "ses_name  named one"
+absent   "opencode-procs: the server is not a window"             "$out" "$OC_D"
+contains "opencode-procs: no terminal is said in opencode's words" "$out" "a script's opencode run"
+kill -STOP "$OC_S"; sleep 0.2
+out="$(ocp resume "$OC_S" -n)"
+contains "opencode-procs: resume keeps the arguments and adds -s"  "$out" "$PX_OC -s ses_named0000000000000000001"
+if [ "$(printf '%s\n' "$out" | grep -o ' -s ' | wc -l)" = 1 ]; then ok "opencode-procs: ... once"
+else nope "opencode-procs: ... once" "$out"; fi
+kill -STOP "$OC_A"; sleep 0.2
+out="$(ocp resume "$OC_A" -n)"
+contains "opencode-procs: resume of a found session keeps --model"  "$out" "$PX_OC --model m1 -s ses_new0000000000000000000002"
+out="$(ocp clean --apply)"
+gone "$OC_A" && gone "$OC_S" && ok "opencode-procs: clean --apply ends the stopped windows" \
+    || nope "opencode-procs: clean --apply ends the stopped windows" "$out"
+kill -0 "$OC_D" 2>/dev/null && ok "opencode-procs: ... and leaves the server alone" \
+    || nope "opencode-procs: ... and leaves the server alone"
+kill -KILL "$CX_A" "$CX_R" "$CX_D" "$OC_D" 2>/dev/null; kill -CONT "$CX_R" 2>/dev/null
+
+pr_block() { sed -n '/^# ── shared ─/,/^# ── this IDE: what differs/p' "$ROOT/bin/$1-procs"; }
+if [ -n "$(pr_block claude)" ] && [ "$(pr_block claude)" = "$(pr_block codex)" ] \
+   && [ "$(pr_block claude)" = "$(pr_block opencode)" ]; then
+    ok "procs: the three copies of the shared part are identical"
+else
+    nope "procs: the three copies of the shared part are identical"
+fi
+
 # ── report ──────────────────────────────────────────────────────────────────
 echo
 echo "$PASS passed, $FAIL failed"

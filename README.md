@@ -5,8 +5,9 @@ Code, Codex CLI and opencode — including the one you lost track of.** A fourth
 `billing`, shows what they cost: per day, week or month across all three, or
 for one session by its id. A fifth, `ide-history`, shows what was said in a
 session — your prompts, or the whole conversation — after the session is gone.
-A sixth, `claude-procs`, finds a Claude Code session stopped by Ctrl-Z and
-gets it back.
+A sixth, `claude-procs`, finds a Claude Code session stopped by Ctrl-Z, or
+left behind by a dropped ssh connection, and gets it back; `codex-procs` and
+`opencode-procs` do the same for Codex and opencode.
 
 [Русская версия](README.RU.md) · [Changelog](CHANGELOG.md)
 
@@ -565,6 +566,29 @@ Code writes for every running process. If that file is missing, or an earlier
 process with the same pid left it, the id comes from `--resume` on the command
 line. `claude-procs` reads `/proc`, so it runs on Linux only.
 
+### Codex and opencode: `codex-procs`, `opencode-procs`
+
+The same commands for the other two IDEs: the list, `fg`, `resume`, `clean`,
+and the dropped-connection hints work as in `claude-procs`.
+
+```
+$ codex-procs
+PID      TTY     STATE    SESSION   NAME               DIR
+705933   pts/6   running  01a18eed  fix the parser     /srv/web
+```
+
+One thing differs: how the session of a window is found. Both IDEs run each
+window as a process on the terminal and write the sessions from a background
+server with no terminal (`codex app-server`, `opencode serve`). Nothing on
+disk ties a window's pid to its session. So the session is the one of the
+window's directory most recently updated since the window started: from
+`~/.codex/state_*.sqlite` for Codex, from `opencode.db` for opencode
+(`session_v2` in opencode 2.x). `codex resume <id>` or `opencode -s <id>` on
+the command line names the session directly. Two windows in one directory
+can be told apart only that way. `resume` reopens a session with
+`codex resume <id>` or `opencode -s <id>` and the window's other options.
+The background server is never listed and never ended.
+
 ## How `--sum` works
 
 Two passes.
@@ -823,6 +847,7 @@ summarized with claude-haiku-4-5-20251001
 | `CLAUDE_PROCS_BIN` | `claude` | the command `claude-procs resume` starts |
 | `CLAUDE_PROCS_WAIT` | `5` | seconds `claude-procs` waits after SIGTERM before SIGKILL |
 | `CLAUDE_PROCS_IDLE` | `120` | seconds without input before `claude-procs` offers to take over a terminal held by sshd |
+| `CODEX_PROCS_*`, `OPENCODE_PROCS_*` | | the same five for `codex-procs` and `opencode-procs`: `_COMM`, `_BIN`, `_WAIT`, `_IDLE` |
 | `CLAUDE_PROCS_COMM` | `claude` | the process name `claude-procs` looks for |
 
 ## Notes per IDE

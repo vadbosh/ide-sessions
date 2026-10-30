@@ -1,0 +1,578 @@
+#!/usr/bin/env bash
+# codex-procs: the Codex windows running on this machine, and what to do with
+# one that was stopped by Ctrl-Z or left behind by a dropped ssh connection.
+#
+#   codex-procs                      every codex window: pid, terminal, state,
+#                                    session, directory, and what to do next
+#   codex-procs fg [PID]             MARKS the terminal to type `fg` in: its tab
+#                                    title becomes "[STOPPED] codex … — type fg",
+#                                    it rings the bell and prints a line there.
+#                                    It does not bring the session back itself
+#                                    (Ctrl-Z by accident: type `fg` right there)
+#   codex-procs fg [PID] --no-mark   only name the terminal, write nothing to it
+#   codex-procs resume [PID]         end a stopped one and reopen its session in
+#                                    THIS terminal (codex resume <id>)
+#   codex-procs resume [PID] -n      print what resume would do, do nothing
+#   codex-procs clean                the processes clean would end (dry-run)
+#   codex-procs clean --apply        end them
+#
+# PID may be left out when exactly one codex window is stopped.
+#
+# A session whose ssh connection dropped is not stopped: it keeps running on a
+# terminal nobody can reach, because sshd has not noticed the connection is
+# gone (with ClientAliveInterval 0 it takes TCP keepalive, two hours). For a
+# running session on a terminal held by sshd — not this one — the list says how
+# long that terminal has had no input, and prints what to type: reptyr -T PID
+# takes the whole terminal over into this one (a blank screen: press Ctrl-L);
+# or kill -HUP the sshd of that login and reopen the session with codex resume <id>.
+# One already taken over with reptyr gets a line saying where it is now.
+# A terminal that had input in the last CODEX_PROCS_IDLE seconds is in use —
+# someone types into it, reptyr included — and gets no commands, only a line.
+#
+# clean ends the processes in state T — stopped by Ctrl-Z or SIGSTOP — with or
+# without a terminal. A running process is never ended, even one with no
+# terminal left (TTY ?): that is a script's `codex exec` as often as a session
+# whose terminal was closed, and nothing outside tells the two apart. The list
+# marks it, and `kill <PID>` is yours to run.
+#
+# Why this exists: Ctrl-Z in a Codex window stops its process group, and
+# the session looks gone. It is not: the shell that ran it holds it as a job,
+# and `fg` there brings it back. Another terminal cannot do `fg` for it — job
+# control belongs to that one shell — so the alternative is to end the stopped
+# window and reopen its session here.
+#
+# The session is found by directory: `codex resume <id>` in argv names it;
+# otherwise it is the thread of the window's directory most recently updated
+# since the window started, read from $CODEX_HOME/state_*.sqlite. Two windows
+# in one directory can be told apart only by `codex resume <id>`.
+#
+# Only a stopped process (state T) is ever ended. A running one is listed and
+# never signalled.
+#
+# Linux only: it reads /proc.
+#
+# Environment:
+#   CODEX_HOME              where state_*.sqlite lives (default ~/.codex)
+#   CODEX_PROCS_COMM      process name to look for (default: codex)
+#   CODEX_PROCS_BIN       command resume starts (default: codex)
+#   CODEX_PROCS_WAIT      seconds to wait after SIGTERM before SIGKILL (default 5)
+#   CODEX_PROCS_IDLE      seconds without input before a terminal held by sshd
+#                           gets the take-over commands (default 120)
+#   NO_COLOR                no colour
+set -Eeuo pipefail
+
+# ── this IDE: names ─────────────────────────────────────────────────────────
+readonly PROG=codex-procs IDE_TAG=codex IDE_LONG="Codex"
+readonly COMM="${CODEX_PROCS_COMM:-codex}"
+readonly BIN="${CODEX_PROCS_BIN:-codex}"
+# A run with no terminal of its own, and the command that reopens a session.
+readonly HEADLESS="codex exec" REOPEN="codex resume <id>"
+readonly WAIT_SECS="${CODEX_PROCS_WAIT:-5}"
+readonly IDLE_SECS="${CODEX_PROCS_IDLE:-120}"
+readonly CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
+readonly DRAFTS_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/ide-sessions/drafts"
+
+# ── shared ──────────────────────────────────────────────────────────────────
+# Everything from here to "this IDE: what differs" is the same in claude-procs,
+# codex-procs and opencode-procs; a test keeps the copies equal. The part after
+# it knows how this IDE runs: which process is its window, where its session
+# id comes from, how a session is reopened.
+
+# The header comment, up to the first line that is not a comment.
+usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"; }
+die()   { printf '%s: %s\n' "$PROG" "$*" >&2; exit 1; }
+
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+    C_ID=$'\033[92m'; C_DIR=$'\033[96m'; C_STOP=$'\033[93m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
+    C_CMD=$'\033[1;97;44m'
+else
+    C_ID=''; C_DIR=''; C_STOP=''; C_DIM=''; C_OFF=''; C_CMD=''
+fi
+# A command for the reader to type by hand: bold white on blue, a space on each
+# side, like a key — no other field uses a background, so it cannot be taken
+# for part of the text. Without colour it stays where the eye expects it: at
+# the end of the line, after a colon, in one column.
+readonly KEY_ON=$'\033[1;97;44m' KEY_OFF=$'\033[0m'
+type_cmd() { printf '%s%s%s' "${C_CMD:+$C_CMD }" "$1" "${C_CMD:+ $C_OFF}"; }
+# hint LABEL COMMAND [NOTE] — one indented line: what it does, then what to
+# type, then a dim note.
+hint() {
+    printf '         %-22s %s' "$1" "$(type_cmd "$2")"
+    [[ -n "${3:-}" ]] && printf '  %s%s%s' "$C_DIM" "$3" "$C_OFF"
+    printf '\n'
+}
+
+# ── reading a process ───────────────────────────────────────────────────────
+
+# proc_stat PID — sets ST_STATE ST_PPID ST_PGRP ST_SID ST_START. The command
+# name sits in parentheses and may hold spaces, so fields are counted from the
+# last ')'.
+proc_stat() {
+    local raw
+    raw="$(cat "/proc/$1/stat" 2>/dev/null)" || return 1
+    raw="${raw##*) }"
+    local -a f
+    read -ra f <<<"$raw"
+    ST_STATE="${f[0]}" ST_PPID="${f[1]}" ST_PGRP="${f[2]}" ST_SID="${f[3]}" ST_TPGID="${f[5]}"
+    ST_START="${f[19]}"
+}
+
+alive() {
+    proc_stat "$1" || return 1
+    [[ "$ST_STATE" != Z && "$ST_STATE" != X ]]
+}
+
+# proc_args PID — the argv of PID into the array ARGS, NUL-safe.
+proc_args() {
+    ARGS=()
+    [[ -r "/proc/$1/cmdline" ]] || return 1
+    mapfile -d '' ARGS <"/proc/$1/cmdline"
+}
+
+proc_tty() { ps -o tty= -p "$1" 2>/dev/null | tr -d ' '; }
+
+# json_str JSON KEY — a string value of a flat one-line JSON object. The
+# sessions files are written by Claude Code on one line, keys unique.
+json_str() {
+    local re="\"$2\":\"([^\"]*)\""
+    [[ "$1" =~ $re ]] && printf '%s' "${BASH_REMATCH[1]}"
+}
+
+
+# descendants PID — every pid below PID, one per line.
+descendants() {
+    ps -eo pid=,ppid= | awk -v root="$1" '
+        { kids[$2] = kids[$2] " " $1 }
+        END {
+            n = split(kids[root], q, " ")
+            for (i = 1; i <= n; i++) {
+                print q[i]
+                m = split(kids[q[i]], more, " ")
+                for (j = 1; j <= m; j++) q[++n] = more[j]
+            }
+        }'
+}
+
+
+# The pids this script runs under: the session that called it must never be
+# ended, even if something stopped it in the middle of the call.
+declare -A MINE=()
+mark_ancestors() {
+    local p=$$
+    while [[ "$p" -gt 1 ]] && proc_stat "$p"; do
+        MINE[$p]=1
+        p="$ST_PPID"
+    done
+}
+
+# The terminal this command runs in: a session there is the reader's own.
+OWN_TTY="$(proc_tty $$)"
+
+# holder_of SHELL — sets H_PID H_COMM to the process that holds the terminal of
+# SHELL (a session leader): its parent — sshd-session, tmux, script. Succeeds
+# only when that is sshd, the one holder that can be left behind by a dropped
+# connection; tmux and screen are reattached instead.
+holder_of() {
+    H_PID="" H_COMM=""
+    [[ "$1" =~ ^[0-9]+$ ]] && proc_stat "$1" || return 1
+    H_PID="$ST_PPID"
+    H_COMM="$(cat "/proc/$H_PID/comm" 2>/dev/null)" || return 1
+    [[ "$H_COMM" == sshd* ]]
+}
+
+# idle_secs TTY — seconds since the terminal last had input, as `w` counts it:
+# the access time of its device. Empty when it cannot be read.
+idle_secs() {
+    local at
+    at="$(stat -c %X "/dev/$1" 2>/dev/null)" || return 0
+    printf '%d' $(( $(date +%s) - at ))
+}
+
+# idle_of SECONDS — the same, for a reader.
+idle_of() {
+    local s="$1"
+    [[ -n "$s" ]] || { printf '?'; return 0; }
+    if   (( s < 120 ));   then printf '%ds' "$s"
+    elif (( s < 7200 ));  then printf '%dm' $((s / 60))
+    else                       printf '%dh%02dm' $((s / 3600)) $((s % 3600 / 60))
+    fi
+}
+
+
+# taken_by TTY — the reptyr that holds the master side of TTY (pts/N), as
+# "PID TTY-of-reptyr", into TAKEN. A terminal taken over with reptyr -T keeps
+# its name and its sshd parent in ps, so only the holders of /dev/ptmx say
+# where it went: /proc/PID/fdinfo/FD gives the index of the pts behind each.
+taken_by() {
+    TAKEN=""
+    [[ "$1" == pts/* ]] || return 1
+    local n="${1#pts/}" dir fd p
+    while read -r dir fd; do
+        p="${dir#/proc/}"; p="${p%%/*}"
+        [[ "$(cat "/proc/$p/comm" 2>/dev/null)" == reptyr ]] || continue
+        grep -qx "tty-index:[[:space:]]*$n" "/proc/$p/fdinfo/$fd" 2>/dev/null || continue
+        TAKEN="$p $(proc_tty "$p")"
+        return 0
+    done < <(find /proc/[0-9]*/fd -lname /dev/ptmx -printf '%h %f\n' 2>/dev/null)
+    return 1
+}
+
+# lost_hints IDX — a running session on a terminal held by sshd, not this one:
+# its connection may have dropped. Prints nothing, and fails, for any other.
+lost_hints() {
+    local i="$1" pid="${P_PID[$1]}" tty="${P_TTY[$1]:-?}" take
+    [[ "${P_STATE[i]}" == running && "$tty" != "?" && "$tty" != "$OWN_TTY" && -z "${P_MINE[i]}" ]] || return 1
+    if taken_by "$tty"; then
+        printf '         taken over: reptyr %s shows it in %s\n' "${TAKEN%% *}" "${TAKEN#* }"
+        return 0
+    fi
+    holder_of "${P_SHELL[i]}" || return 1
+    local idle; idle="$(idle_secs "$tty")"
+    if [[ -n "$idle" && "$idle" -lt "$IDLE_SECS" ]]; then
+        printf '         %s is held by %s %s and had input %s ago — in use\n' \
+            "$tty" "$H_COMM" "$H_PID" "$(idle_of "$idle")"
+        return 0
+    fi
+    printf '         %s is held by %s %s, no input for %s — connection lost?\n' \
+        "$tty" "$H_COMM" "$H_PID" "$(idle_of "$idle")"
+    # reptyr attaches with ptrace: root may, anyone else needs ptrace_scope 0.
+    take="reptyr -T $pid"
+    [[ $EUID -ne 0 && "$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo 0)" != 0 ]] && take="sudo $take"
+    if command -v reptyr >/dev/null 2>&1; then
+        hint "take it over here:" "$take" "a blank screen: press Ctrl-L"
+    else
+        hint "take it over here:" "$take" "needs reptyr: apt install reptyr"
+    fi
+    hint "or end that login:" "kill -HUP $H_PID"
+    if [[ -n "${P_ID[i]}" ]] && resume_cmd "$i"; then
+        hint "then reopen it:" "cd $(printf '%q' "${P_CWD[i]}") && $(printf '%q ' "${RESUME[@]}" | sed 's/ $//')"
+    fi
+    return 0
+}
+
+# ── the table ───────────────────────────────────────────────────────────────
+
+# collect — fills P_* arrays, one entry per window of this IDE, oldest first.
+# ide_proc decides which processes those are.
+P_PID=() P_STATE=() P_TTY=() P_SHELL=() P_ID=() P_NAME=() P_CWD=() P_DRAFT=() P_MINE=()
+collect() {
+    local pid comm args
+    while read -r pid comm args; do
+        ide_proc "$comm" "$args" || continue
+        proc_stat "$pid" || continue
+        [[ "$ST_STATE" == Z || "$ST_STATE" == X ]] && continue
+        local state=running shell=gone draft=""
+        [[ "$ST_STATE" == T ]] && state=stopped
+        alive "$ST_SID" && shell="$ST_SID"
+        proc_stat "$pid"
+        session_of "$pid" "$ST_START"
+        draft="$(draft_of "$pid" || true)"
+        P_PID+=("$pid") P_STATE+=("$state") P_TTY+=("$(proc_tty "$pid")")
+        P_SHELL+=("$shell") P_ID+=("$S_ID") P_NAME+=("$S_NAME") P_CWD+=("$S_CWD")
+        P_DRAFT+=("$draft") P_MINE+=("${MINE[$pid]:-}")
+    done < <(ps -eo pid=,comm=,args= --sort=start_time)
+}
+
+# pick ACTION [PID] — sets IDX to the entry the command acts on. With no PID,
+# the one stopped process; with several, the caller has to name one.
+pick() {
+    local action="$1" want="${2:-}" i stopped=()
+    for i in "${!P_PID[@]}"; do
+        [[ "${P_STATE[i]}" == stopped ]] && stopped+=("$i")
+        if [[ -n "$want" && "${P_PID[i]}" == "$want" ]]; then IDX="$i"; return 0; fi
+    done
+    [[ -n "$want" ]] && die "no $COMM process with pid $want — run $PROG to list them"
+    case "${#stopped[@]}" in
+        0) die "no stopped $COMM process — nothing to $action" ;;
+        1) IDX="${stopped[0]}" ;;
+        *) die "${#stopped[@]} stopped $COMM processes — name one: $PROG $action <PID>" ;;
+    esac
+}
+
+show_list() {
+    if [[ ${#P_PID[@]} -eq 0 ]]; then
+        printf 'no %s process running\n' "$COMM"
+        return 0
+    fi
+    printf '%-8s %-7s %-8s %-9s %-18s %s\n' PID TTY STATE SESSION NAME DIR
+    local i state id
+    for i in "${!P_PID[@]}"; do
+        state="${P_STATE[i]}"
+        [[ "$state" == stopped ]] && state="${C_STOP}$(printf '%-8s' stopped)${C_OFF}" \
+                                  || state="$(printf '%-8s' "$state")"
+        id="${P_ID[i]:0:8}"
+        printf '%-8s %-7s %s %s%-9s%s %-18s %s%s%s%s\n' \
+            "${P_PID[i]}" "${P_TTY[i]:-?}" "$state" \
+            "$C_ID" "${id:--}" "$C_OFF" "${P_NAME[i]:--}" \
+            "$C_DIR" "${P_CWD[i]:-?}" "$C_OFF" \
+            "${P_MINE[i]:+  (this session)}"
+        [[ -n "${P_DRAFT[i]}" ]] && printf '         %sprompt draft: %s%s\n' "$C_DIM" "${P_DRAFT[i]}" "$C_OFF"
+        if [[ "${P_STATE[i]}" == stopped ]]; then
+            if [[ "${P_SHELL[i]}" != gone ]]; then
+                hint "in ${P_TTY[i]:-its terminal} type:" "fg"
+                hint "which tab is ${P_TTY[i]:-it}:" "$PROG fg ${P_PID[i]}"
+            fi
+            hint "or reopen it here:" "$PROG resume ${P_PID[i]}"
+        elif [[ "${P_TTY[i]:-?}" == "?" ]]; then
+            printf '         no terminal: a script'"'"'s %s, or a session whose terminal closed\n' "$HEADLESS"
+            hint "clean leaves it; lost?" "kill ${P_PID[i]}"
+        else
+            lost_hints "$i" || true
+        fi
+    done
+    local n=0
+    for i in "${P_STATE[@]}"; do [[ "$i" == stopped ]] && n=$((n + 1)); done
+    [[ $n -gt 0 ]] && printf '\n%d stopped — end them all: %s\n' "$n" "$(type_cmd "$PROG clean --apply")"
+    return 0
+}
+
+# ── ending a stopped process ────────────────────────────────────────────────
+
+# save_draft IDX — copies the prompt draft and its editor swap file aside.
+save_draft() {
+    local draft="${P_DRAFT[$1]}" stamp f to
+    [[ -n "$draft" ]] || return 0
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$DRAFTS_DIR"
+    for f in "$draft" "$(dirname "$draft")/.$(basename "$draft").swp"; do
+        [[ -f "$f" ]] || continue
+        to="$DRAFTS_DIR/${P_ID[$1]:-pid${P_PID[$1]}}-$stamp-$(basename "$f")"
+        cp -p -- "$f" "$to"
+        printf '  saved %s\n' "$to"
+        [[ "$to" == *.swp ]] && printf '  unsaved edits: vim -r %q\n' "$to"
+    done
+    return 0
+}
+
+# end_proc IDX — SIGTERM, then SIGCONT so a stopped process can act on it;
+# SIGKILL after WAIT_SECS. The whole process group when the window leads it — the
+# editor and any tool it was running stopped with it.
+end_proc() {
+    local pid="${P_PID[$1]}" target
+    [[ "${P_STATE[$1]}" == stopped ]] || die "pid $pid is running, not stopped — not touching it"
+    [[ -z "${P_MINE[$1]}" ]] || die "pid $pid is the session running this command — not touching it"
+    proc_stat "$pid" || { printf '  pid %s already gone\n' "$pid"; return 0; }
+    [[ "$ST_STATE" == T ]] || die "pid $pid is no longer stopped — not touching it"
+    save_draft "$1"
+    target="$pid"
+    [[ "$ST_PGRP" == "$pid" ]] && target="-$pid"
+    kill -TERM -- "$target" 2>/dev/null || true
+    kill -CONT -- "$target" 2>/dev/null || true
+    local t
+    for ((t = 0; t < WAIT_SECS * 10; t++)); do
+        alive "$pid" || { printf '  ended pid %s\n' "$pid"; return 0; }
+        sleep 0.1
+    done
+    kill -KILL -- "$target" 2>/dev/null || true
+    for ((t = 0; t < 20; t++)); do
+        alive "$pid" || { printf '  ended pid %s (SIGKILL after %ss)\n' "$pid" "$WAIT_SECS"; return 0; }
+        sleep 0.1
+    done
+    die "pid $pid survived SIGKILL"
+}
+
+# ── commands ────────────────────────────────────────────────────────────────
+
+# mark_terminal IDX — makes the terminal of a stopped session findable from the
+# outside: pts/3 is a name the server knows and the tab bar on the reader's
+# machine does not. It sets the tab title, rings the bell (most terminals flag
+# the tab) and prints one line. Only when the shell owns the terminal (its
+# foreground group is the shell's): at a prompt, a line costs nothing; over a
+# program that draws the screen — vim, another session — it would garble it.
+mark_terminal() {
+    local i="$1" tty="${P_TTY[$1]}" shell="${P_SHELL[$1]}" label
+    label="${P_NAME[i]:-${P_ID[i]:0:8}}"
+    [[ -w "/dev/$tty" ]] || { printf '(cannot write to /dev/%s — not marked)\n' "$tty"; return 1; }
+    proc_stat "$shell" || return 1
+    if [[ "$ST_TPGID" != "$ST_PGRP" ]]; then
+        local fgp
+        fgp="$(ps -o args= -p "$ST_TPGID" 2>/dev/null | cut -c1-60)"
+        printf '(not marked: %s is busy with another program — %s)\n' "$tty" "${fgp:-pid $ST_TPGID}"
+        return 1
+    fi
+    printf '\033]0;[STOPPED] %s %s — type fg\007\a\r\n*** %s: %s session %s (%s) is stopped in this terminal. Type: %s fg %s ***\r\n' \
+        "$IDE_TAG" "$label" "$PROG" "$IDE_LONG" "${P_ID[i]:0:8}" "${P_NAME[i]:--}" "$KEY_ON" "$KEY_OFF" > "/dev/$tty"
+    printf 'marked %s: tab title "[STOPPED] %s %s — type fg", a bell and a line in the window\n' "$tty" "$IDE_TAG" "$label"
+}
+
+cmd_fg() {
+    local want="" mark=1
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --no-mark) mark=0 ;;
+            -*) die "fg: unknown option $1" ;;
+            *) want="$1" ;;
+        esac
+        shift
+    done
+    pick fg "$want"
+    local pid="${P_PID[IDX]}" tty="${P_TTY[IDX]}"
+    if [[ "${P_STATE[IDX]}" != stopped && "${tty:-?}" == "?" ]]; then
+        printf 'pid %s is running with no terminal — nothing to bring back.\n' "$pid"
+        printf 'a lost session? end it: %s\n' "$(type_cmd "kill $pid")"
+    elif [[ "${P_STATE[IDX]}" != stopped ]]; then
+        printf 'pid %s is running in %s — switch to that terminal\n' "$pid" "$tty"
+        lost_hints "$IDX" || true
+    elif [[ "${P_SHELL[IDX]}" == gone ]]; then
+        printf 'pid %s is stopped and the shell that ran it is gone — no fg possible.\n' "$pid"
+        printf 'reopen it here: %s\n' "$(type_cmd "$PROG resume $pid")"
+    else
+        [[ $mark -eq 1 ]] && { mark_terminal "$IDX" || true; }
+        printf 'in the terminal %s, type:\n\n    %s\n\n' "${tty:-?}" "$(type_cmd fg)"
+        printf 'several jobs there: %s, then %s\n' "$(type_cmd jobs)" "$(type_cmd 'fg %N')"
+        printf 'that terminal lost:  %s\n' "$(type_cmd "$PROG resume $pid")"
+    fi
+}
+
+cmd_resume() {
+    local want="" dry=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -n|--dry-run) dry=1 ;;
+            -*) die "resume: unknown option $1" ;;
+            *) want="$1" ;;
+        esac
+        shift
+    done
+    pick resume "$want"
+    local i="$IDX" pid="${P_PID[IDX]}" sid="${P_ID[IDX]}" cwd="${P_CWD[IDX]}"
+    [[ "${P_STATE[i]}" == stopped ]] \
+        || die "pid $pid is running (terminal ${P_TTY[i]:-?}) — two processes on one session overwrite each other. Use that one."
+    [[ -n "$sid" ]] || die "pid $pid: session id unknown — find it with $IDE_TAG-sessions -p"
+    [[ -d "$cwd" ]] || die "pid $pid: its directory '$cwd' is gone"
+
+    resume_cmd "$i" || die "pid $pid: cannot read its command line"
+    local -a cmd=("${RESUME[@]}")
+
+    local shown
+    shown="$(printf '%q ' "${cmd[@]}")"
+    printf 'pid %s, session %s%s%s, in %s%s%s\n' "$pid" "$C_ID" "$sid" "$C_OFF" "$C_DIR" "$cwd" "$C_OFF"
+    if [[ $dry -eq 1 ]]; then
+        printf 'would end pid %s and run, in %s:\n  %s\n' "$pid" "$cwd" "$shown"
+        return 0
+    fi
+    end_proc "$i"
+    printf '  starting: %s\n\n' "$shown"
+    cd -- "$cwd"
+    exec "${cmd[@]}"
+}
+
+cmd_clean() {
+    local apply=0 i n=0
+    case "${1:-}" in
+        --apply) apply=1 ;;
+        '') ;;
+        *) die "clean: unknown option $1" ;;
+    esac
+    for i in "${!P_PID[@]}"; do
+        [[ "${P_STATE[i]}" == stopped && -z "${P_MINE[i]}" ]] || continue
+        n=$((n + 1))
+        printf '%s  %s  %s%s%s  %s%s%s\n' "${P_PID[i]}" "${P_TTY[i]:-?}" \
+            "$C_ID" "${P_ID[i]:-?}" "$C_OFF" "$C_DIR" "${P_CWD[i]:-?}" "$C_OFF"
+        [[ $apply -eq 1 ]] && end_proc "$i"
+    done
+    if [[ $n -eq 0 ]]; then
+        printf 'no stopped %s process — nothing to clean\n' "$COMM"
+    elif [[ $apply -eq 0 ]]; then
+        printf '\n%d stopped, running ones untouched. Dry run — end them: %s\n' "$n" "$(type_cmd "$PROG clean --apply")"
+        printf 'their sessions stay on disk: %s reopens any of them later\n' "$REOPEN"
+    fi
+}
+
+main() {
+    case "${1:-}" in
+        -h|--help|help) usage; return 0 ;;
+    esac
+    [[ -d /proc/self ]] || die "needs /proc — Linux only"
+    mark_ancestors
+    collect
+    local sub="${1:-list}"
+    [[ $# -gt 0 ]] && shift
+    case "$sub" in
+        list)   show_list ;;
+        fg)     cmd_fg "$@" ;;
+        resume) cmd_resume "$@" ;;
+        clean)  cmd_clean "$@" ;;
+        *)      usage >&2; exit 2 ;;
+    esac
+}
+
+# ── this IDE: what differs ──────────────────────────────────────────────────
+
+# ide_proc COMM ARGS — a Codex window: the codex binary, not its background
+# `codex app-server`, which has no terminal and writes the sessions of every
+# window.
+ide_proc() {
+    [[ "$1" == "$COMM" ]] || return 1
+    [[ " $2 " != *" app-server "* ]]
+}
+
+# start_epoch START — the wall-clock second a process started, from its start
+# time in clock ticks since boot (field 22 of /proc/PID/stat).
+start_epoch() {
+    local btime hz
+    btime="$(awk '$1 == "btime" { print $2 }' /proc/stat)"
+    hz="$(getconf CLK_TCK 2>/dev/null || echo 100)"
+    printf '%d' $(( btime + $1 / hz ))
+}
+
+# session_of PID START — sets S_ID S_NAME S_CWD. `codex resume <id>` names the
+# session in argv. Otherwise nothing ties a window to its session — the
+# app-server writes the rollouts, and its state database has no pid — so the
+# session is the thread of the window's directory most recently updated since
+# the window started; a thread is created the moment the window opens.
+session_of() {
+    local pid="$1" start="$2" i db
+    S_ID="" S_NAME="" S_CWD="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+    if proc_args "$pid"; then
+        for ((i = 1; i < ${#ARGS[@]}; i++)); do
+            if [[ "${ARGS[i]}" == resume && -n "${ARGS[i+1]:-}" && "${ARGS[i+1]}" != -* ]]; then
+                S_ID="${ARGS[i+1]}"
+            fi
+        done
+    fi
+    db="$(find "$CODEX_DIR" -maxdepth 1 -name 'state_*.sqlite' 2>/dev/null | sort -V | tail -1)"
+    [[ -n "$db" ]] || return 0
+    local row
+    row="$(python3 - "$db" "$S_ID" "$S_CWD" "$(start_epoch "$start")" <<'PY' 2>/dev/null || true
+import sqlite3, sys
+db, sid, cwd, since = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+con = sqlite3.connect('file:%s?mode=ro' % db, uri=True, timeout=5)
+if sid:
+    r = con.execute("SELECT id, title FROM threads WHERE id = ?", (sid,)).fetchone()
+else:
+    r = con.execute("""SELECT id, title FROM threads WHERE cwd = ? AND updated_at >= ?
+                       AND COALESCE(archived, 0) = 0 ORDER BY updated_at DESC LIMIT 1""",
+                    (cwd, since - 5)).fetchone()
+if r:
+    print('%s\t%s' % (r[0], ' '.join((r[1] or '').split())[:18]))
+PY
+)"
+    [[ -n "$row" ]] || return 0
+    S_ID="${row%%$'\t'*}" S_NAME="${row#*$'\t'}"
+    return 0
+}
+
+# draft_of PID — Codex keeps no prompt draft in a file of its own.
+draft_of() { return 1; }
+
+# resume_cmd IDX — the command that reopens the session of IDX, into RESUME:
+# the window's own options without a `resume` and its argument, then
+# `resume <id>`.
+resume_cmd() {
+    local i="$1" k
+    RESUME=()
+    proc_args "${P_PID[i]}" || return 1
+    RESUME=("$BIN")
+    for ((k = 1; k < ${#ARGS[@]}; k++)); do
+        case "${ARGS[k]}" in
+            resume)
+                [[ "${ARGS[k+1]:-}" == --last ]] && k=$((k + 1))
+                [[ -n "${ARGS[k+1]:-}" && "${ARGS[k+1]}" != -* ]] && k=$((k + 1)) ;;
+            *) RESUME+=("${ARGS[k]}") ;;
+        esac
+    done
+    RESUME+=(resume "${P_ID[i]}")
+}
+
+main "$@"

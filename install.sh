@@ -19,8 +19,9 @@
 # assistant runs it. It replaced agent-history in 0.11.0: an agent-history this
 # script installed is removed, one edited by hand is left with a warning.
 #
-# claude-procs reads /proc and the Claude Code sessions/<pid>.json files: a
-# session stopped by Ctrl-Z is found there and reopened. Linux only.
+# claude-procs, codex-procs and opencode-procs read /proc and each IDE's own
+# session records: a session stopped by Ctrl-Z, or left behind by a dropped ssh
+# connection, is found there and reopened. Linux only.
 #
 # Idempotent: re-running replaces only what changed. A file it overwrites is
 # backed up ONLY when that content is not already in the source repository — a
@@ -34,7 +35,7 @@ set -euo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${IDE_SESSIONS_BIN_DIR:-$HOME/.local/bin}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-COMMANDS="claude-sessions codex-sessions opencode-sessions billing ide-history claude-procs"
+COMMANDS="claude-sessions codex-sessions opencode-sessions billing ide-history claude-procs codex-procs opencode-procs"
 RETIRED="agent-history"
 BACKUPS="${XDG_STATE_HOME:-$HOME/.local/state}/ide-sessions/backups"
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.19.0
+
+- **`codex-procs` and `opencode-procs`: `claude-procs` for the other two
+  IDEs.** The list, `fg`, `resume`, `clean` and the dropped-connection hints
+  work the same; three separate commands, and the part they share is copied
+  between markers in each, with a test that keeps the copies equal. Both IDEs
+  run a window on the terminal and write the sessions from a background server
+  (`codex app-server`, `opencode serve`), which is never listed or ended.
+  Nothing ties a window's pid to its session, so the session is the one of the
+  window's directory most recently updated since the window started
+  (`state_*.sqlite` for Codex, `opencode.db` for opencode); `codex resume <id>`
+  or `opencode -s <id>` in argv names it directly. `resume` reopens with the
+  window's own options. Checked on a live Codex and opencode window each.
+  `claude-procs` is rearranged into the same shared and per-IDE parts; its
+  output is unchanged.
+
 ## 0.18.4
 
 - **`opencode-sessions` did not see the sessions of opencode 2.x.** 2.x keeps

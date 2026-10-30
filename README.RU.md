@@ -6,7 +6,8 @@
 для всех трёх IDE или для одной сессии по её id. Пятая, `ide-history`,
 показывает, что было в сессии, — ваши запросы или весь разговор, — и после
 того, как сессия закрыта. Шестая, `claude-procs`, находит сессию Claude Code,
-остановленную по Ctrl-Z, и возвращает её.
+остановленную по Ctrl-Z или брошенную после обрыва ssh-соединения, и возвращает
+её; `codex-procs` и `opencode-procs` делают то же для Codex и opencode.
 
 [English version](README.md) · [История версий](CHANGELOG.md)
 
@@ -573,6 +574,29 @@ Code пишет для каждого работающего процесса. �
 прежний процесс с тем же pid, id берётся из `--resume` в командной строке.
 `claude-procs` читает `/proc`, поэтому работает только в Linux.
 
+### Codex и opencode: `codex-procs`, `opencode-procs`
+
+Те же команды для двух других IDE: список, `fg`, `resume`, `clean` и подсказки
+при обрыве соединения работают так же, как в `claude-procs`.
+
+```
+$ codex-procs
+PID      TTY     STATE    SESSION   NAME               DIR
+705933   pts/6   running  01a18eed  fix the parser     /srv/web
+```
+
+Отличается одно — как найти сессию окна. Обе IDE запускают каждое окно
+отдельным процессом на терминале, а сессии пишет фоновый сервер без терминала
+(`codex app-server`, `opencode serve`). Ничто на диске не связывает pid окна с
+его сессией. Поэтому сессией окна считается та, что относится к его каталогу и
+обновлялась последней после запуска окна: у Codex — из
+`~/.codex/state_*.sqlite`, у opencode — из `opencode.db` (`session_v2` в
+opencode 2.x). Если в командной строке есть `codex resume <id>` или
+`opencode -s <id>`, сессия берётся оттуда напрямую; два окна в одном каталоге
+различаются только так. `resume` открывает сессию снова командой
+`codex resume <id>` или `opencode -s <id>` с остальными параметрами окна.
+Фоновый сервер в список не попадает и не завершается никогда.
+
 ## Как работает `--sum`
 
 В два прохода.
@@ -832,6 +856,7 @@ summarized with claude-haiku-4-5-20251001
 | `CLAUDE_PROCS_BIN` | `claude` | какую команду запускает `claude-procs resume` |
 | `CLAUDE_PROCS_WAIT` | `5` | сколько секунд `claude-procs` ждёт после SIGTERM, прежде чем послать SIGKILL |
 | `CLAUDE_PROCS_IDLE` | `120` | сколько секунд без ввода должно пройти, прежде чем `claude-procs` предложит забрать терминал, который держит sshd |
+| `CODEX_PROCS_*`, `OPENCODE_PROCS_*` | | те же переменные для `codex-procs` и `opencode-procs`: `_COMM`, `_BIN`, `_WAIT`, `_IDLE` |
 | `CLAUDE_PROCS_COMM` | `claude` | процессы с каким именем ищет `claude-procs` |
 
 ## Особенности по IDE
