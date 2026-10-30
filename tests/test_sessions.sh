@@ -2001,6 +2001,40 @@ else
     echo "  skip claude-procs fg marking: no script(1)"
 fi
 
+# A dropped ssh connection: the session is not stopped, it runs on a terminal
+# nobody can reach. The terminal's holder is a copy of script(1) named
+# sshd-session, so the process that holds the pty is called what sshd's is.
+if command -v script >/dev/null 2>&1; then
+    cp "$(command -v script)" "$TMP/cp/sshd-session"
+    for h in sshd-session plain; do
+        bin="$TMP/cp/sshd-session"; [ "$h" = plain ] && bin="$(command -v script)"
+        CP_PIDFILE="$TMP/cp/l-$h.pid" CP_DRAFT="$TMP/cp/prompts/claude-prompt-m.md" \
+            "$bin" -qfec "bash -c '\"$TMP/cp/bin/$CP_COMM\" --strict-mcp-config --resume $CP_SID_R & wait'" /dev/null \
+            </dev/null >/dev/null 2>&1 &
+        for i in $(seq 50); do [ -s "$TMP/cp/l-$h.pid" ] && break; sleep 0.1; done
+    done
+    P_L="$(cat "$TMP/cp/l-sshd-session.pid")"; P_P="$(cat "$TMP/cp/l-plain.pid")"
+    L_SHELL="$(ps -o sid= -p "$P_L" | tr -d ' ')"; P_SHELL_="$(ps -o sid= -p "$P_P" | tr -d ' ')"
+    L_HOLDER="$(ps -o ppid= -p "$L_SHELL" | tr -d ' ')"
+    out="$(CLAUDE_PROCS_IDLE=0 "$CP" 2>&1)"
+    row="$(printf '%s\n' "$out" | sed -n "/^$P_L /,/^[0-9]/p")"
+    contains "claude-procs: a terminal held by sshd is named"        "$row" "is held by sshd-session $L_HOLDER"
+    contains "claude-procs: ... with reptyr -T to take it over"      "$row" "reptyr -T $P_L"
+    contains "claude-procs: ... and Ctrl-L for a blank screen"       "$row" "press Ctrl-L"
+    contains "claude-procs: ... kill -HUP of that sshd"              "$row" "kill -HUP $L_HOLDER"
+    contains "claude-procs: ... and the resume with its own flags"   "$row" "&& claude --strict-mcp-config --resume $CP_SID_R"
+    row="$(printf '%s\n' "$out" | sed -n "/^$P_P /,/^[0-9]/p")"
+    absent   "claude-procs: a terminal held by anything else: no hints" "$row" "reptyr"
+    out="$(CLAUDE_PROCS_IDLE=100000 "$CP" 2>&1)"
+    row="$(printf '%s\n' "$out" | sed -n "/^$P_L /,/^[0-9]/p")"
+    contains "claude-procs: recent input means in use"               "$row" "— in use"
+    absent   "claude-procs: ... and no kill for it"                  "$row" "kill -HUP"
+    out="$(CLAUDE_PROCS_IDLE=0 "$CP" fg "$P_L" 2>&1)"
+    contains "claude-procs: fg on it gives the same commands"        "$out" "reptyr -T $P_L"
+    kill -KILL -- "-$L_SHELL" "-$P_SHELL_" 2>/dev/null
+    gone "$P_L" && gone "$P_P" || nope "claude-procs: the sshd fakes are gone after the test"
+fi
+
 # ── report ──────────────────────────────────────────────────────────────────
 echo
 echo "$PASS passed, $FAIL failed"

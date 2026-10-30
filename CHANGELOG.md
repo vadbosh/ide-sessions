@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.18.2
+
+- **A session whose ssh connection dropped is not stopped, and `claude-procs`
+  had nothing to say about it.** With `ClientAliveInterval 0` sshd keeps the
+  terminal open until TCP keepalive gives up, two hours later, so the session
+  goes on running where nobody can reach it, and `fg` has no shell to run in.
+  For a running session on a terminal held by sshd, other than this one, the
+  list and `claude-procs fg` now show how long the terminal has had no input,
+  and three commands: `reptyr -T PID` to take the whole terminal over (a blank
+  screen: Ctrl-L), `kill -HUP` of that sshd, and `cd DIR && claude … --resume
+  ID` with the session's own flags. A terminal with input in the last
+  `CLAUDE_PROCS_IDLE` seconds (120) is in use, `reptyr` included, and gets one
+  line and no commands. Tried on a real dropped session: `reptyr -T` brought it
+  back after Ctrl-L.
+
 ## 0.18.1
 
 - **`claude-procs`: a command to type by hand looks like a key.** In

@@ -506,6 +506,35 @@ format = "[$output ]($style)"
 
 Then put `${custom.tty}` in `format`, for example after `$hostname`.
 
+A session whose ssh connection dropped is a different case. It is not stopped:
+it keeps running on a terminal nobody can reach, because sshd has not noticed
+that the connection is gone. With `ClientAliveInterval 0` sshd waits for TCP
+keepalive, which takes two hours. `fg` cannot help, because the process is not
+a job of any shell you can reach. For a running session on a terminal that sshd
+holds, other than your own, the list says how long that terminal has had no
+input and what to type:
+
+```
+175386   pts/0   running  6cc61bcf  ix-fb              /Ix
+         pts/0 is held by sshd-session 173227, no input for 43m — connection lost?
+         take it over here:     reptyr -T 175386  a blank screen: press Ctrl-L
+         or end that login:     kill -HUP 173227
+         then reopen it:        cd /Ix && claude --resume 6cc61bcf-6aa4-4a17-8410-581b463d26f7
+```
+
+`reptyr -T` moves the whole terminal of the session, with the MCP servers it
+runs, into the terminal you type it in. The screen stays blank until something
+redraws it: press Ctrl-L. `reptyr` attaches with ptrace, so a user other than
+root needs `sudo` when `kernel.yama.ptrace_scope` is not 0, and the list then
+shows the command with `sudo`. The other way ends that ssh login, so the
+session gets SIGHUP and exits; its transcript is on disk, and the last command
+reopens it with the flags it was started with.
+
+A terminal that had input in the last 2 minutes is in use, because someone
+types into it, `reptyr` included. It gets one line, `in use`, and no commands.
+`CLAUDE_PROCS_IDLE` changes the 2 minutes. A terminal held by tmux or screen
+gets nothing, because you reattach to it there.
+
 `resume` and `clean` end only a stopped process (state `T`). A running process
 is listed and never gets a signal: idle at its prompt, busy, or the session in
 which you run `claude-procs`. `resume` refuses a running process, because two
@@ -788,6 +817,7 @@ summarized with claude-haiku-4-5-20251001
 | `OPENCODE_DATA_DIR` | `~/.local/share/opencode` | opencode storage |
 | `CLAUDE_PROCS_BIN` | `claude` | the command `claude-procs resume` starts |
 | `CLAUDE_PROCS_WAIT` | `5` | seconds `claude-procs` waits after SIGTERM before SIGKILL |
+| `CLAUDE_PROCS_IDLE` | `120` | seconds without input before `claude-procs` offers to take over a terminal held by sshd |
 | `CLAUDE_PROCS_COMM` | `claude` | the process name `claude-procs` looks for |
 
 ## Notes per IDE

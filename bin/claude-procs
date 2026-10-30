@@ -18,6 +18,16 @@
 #
 # PID may be left out when exactly one claude process is stopped.
 #
+# A session whose ssh connection dropped is not stopped: it keeps running on a
+# terminal nobody can reach, because sshd has not noticed the connection is
+# gone (with ClientAliveInterval 0 it takes TCP keepalive, two hours). For a
+# running session on a terminal held by sshd — not this one — the list says how
+# long that terminal has had no input, and prints what to type: reptyr -T PID
+# takes the whole terminal over into this one (a blank screen: press Ctrl-L);
+# or kill -HUP the sshd of that login and reopen the session with --resume.
+# A terminal that had input in the last CLAUDE_PROCS_IDLE seconds is in use —
+# someone types into it, reptyr included — and gets no commands, only a line.
+#
 # clean ends the processes in state T — stopped by Ctrl-Z or SIGSTOP — with or
 # without a terminal. A running process is never ended, even one with no
 # terminal left (TTY ?): that is a script's `claude -p` as often as a session
@@ -46,12 +56,15 @@
 #   CLAUDE_PROCS_COMM       process name to look for (default: claude)
 #   CLAUDE_PROCS_BIN        command resume starts (default: claude)
 #   CLAUDE_PROCS_WAIT       seconds to wait after SIGTERM before SIGKILL (default 5)
+#   CLAUDE_PROCS_IDLE       seconds without input before a terminal held by sshd
+#                           gets the take-over commands (default 120)
 #   NO_COLOR                no colour
 set -Eeuo pipefail
 
 readonly COMM="${CLAUDE_PROCS_COMM:-claude}"
 readonly CLAUDE_BIN="${CLAUDE_PROCS_BIN:-claude}"
 readonly WAIT_SECS="${CLAUDE_PROCS_WAIT:-5}"
+readonly IDLE_SECS="${CLAUDE_PROCS_IDLE:-120}"
 readonly SESSIONS_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions"
 readonly DRAFTS_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/ide-sessions/drafts"
 
@@ -71,8 +84,13 @@ fi
 # the end of the line, after a colon, in one column.
 readonly KEY_ON=$'\033[1;97;44m' KEY_OFF=$'\033[0m'
 type_cmd() { printf '%s%s%s' "${C_CMD:+$C_CMD }" "$1" "${C_CMD:+ $C_OFF}"; }
-# hint LABEL COMMAND — one indented line: what it does, then what to type.
-hint() { printf '         %-22s %s\n' "$1" "$(type_cmd "$2")"; }
+# hint LABEL COMMAND [NOTE] — one indented line: what it does, then what to
+# type, then a dim note.
+hint() {
+    printf '         %-22s %s' "$1" "$(type_cmd "$2")"
+    [[ -n "${3:-}" ]] && printf '  %s%s%s' "$C_DIM" "$3" "$C_OFF"
+    printf '\n'
+}
 
 # ── reading a process ───────────────────────────────────────────────────────
 
@@ -172,6 +190,91 @@ mark_ancestors() {
     done
 }
 
+# The terminal this command runs in: a session there is the reader's own.
+OWN_TTY="$(proc_tty $$)"
+
+# holder_of SHELL — sets H_PID H_COMM to the process that holds the terminal of
+# SHELL (a session leader): its parent — sshd-session, tmux, script. Succeeds
+# only when that is sshd, the one holder that can be left behind by a dropped
+# connection; tmux and screen are reattached instead.
+holder_of() {
+    H_PID="" H_COMM=""
+    [[ "$1" =~ ^[0-9]+$ ]] && proc_stat "$1" || return 1
+    H_PID="$ST_PPID"
+    H_COMM="$(cat "/proc/$H_PID/comm" 2>/dev/null)" || return 1
+    [[ "$H_COMM" == sshd* ]]
+}
+
+# idle_secs TTY — seconds since the terminal last had input, as `w` counts it:
+# the access time of its device. Empty when it cannot be read.
+idle_secs() {
+    local at
+    at="$(stat -c %X "/dev/$1" 2>/dev/null)" || return 0
+    printf '%d' $(( $(date +%s) - at ))
+}
+
+# idle_of SECONDS — the same, for a reader.
+idle_of() {
+    local s="$1"
+    [[ -n "$s" ]] || { printf '?'; return 0; }
+    if   (( s < 120 ));   then printf '%ds' "$s"
+    elif (( s < 7200 ));  then printf '%dm' $((s / 60))
+    else                       printf '%dh%02dm' $((s / 3600)) $((s % 3600 / 60))
+    fi
+}
+
+# resume_cmd IDX — the command that reopens the session of IDX, into RESUME:
+# the process's own flags without the ones that pick a session, plus --resume
+# <id>. Under npm argv starts with the interpreter and the script path; the
+# flags follow the script.
+resume_cmd() {
+    local i="$1" k first=1
+    RESUME=()
+    proc_args "${P_PID[i]}" || return 1
+    for ((k = 0; k < ${#ARGS[@]} && k < 2; k++)); do
+        [[ "${ARGS[k]##*/}" == "$COMM" ]] && first=$((k + 1))
+    done
+    local -a a=("${ARGS[@]:first}")
+    RESUME=("$CLAUDE_BIN")
+    for ((k = 0; k < ${#a[@]}; k++)); do
+        case "${a[k]}" in
+            --resume|-r) k=$((k + 1)) ;;
+            --resume=*|--continue|-c) ;;
+            *) RESUME+=("${a[k]}") ;;
+        esac
+    done
+    RESUME+=(--resume "${P_ID[i]}")
+}
+
+# lost_hints IDX — a running session on a terminal held by sshd, not this one:
+# its connection may have dropped. Prints nothing, and fails, for any other.
+lost_hints() {
+    local i="$1" pid="${P_PID[$1]}" tty="${P_TTY[$1]:-?}" take
+    [[ "${P_STATE[i]}" == running && "$tty" != "?" && "$tty" != "$OWN_TTY" && -z "${P_MINE[i]}" ]] || return 1
+    holder_of "${P_SHELL[i]}" || return 1
+    local idle; idle="$(idle_secs "$tty")"
+    if [[ -n "$idle" && "$idle" -lt "$IDLE_SECS" ]]; then
+        printf '         %s is held by %s %s and had input %s ago — in use\n' \
+            "$tty" "$H_COMM" "$H_PID" "$(idle_of "$idle")"
+        return 0
+    fi
+    printf '         %s is held by %s %s, no input for %s — connection lost?\n' \
+        "$tty" "$H_COMM" "$H_PID" "$(idle_of "$idle")"
+    # reptyr attaches with ptrace: root may, anyone else needs ptrace_scope 0.
+    take="reptyr -T $pid"
+    [[ $EUID -ne 0 && "$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo 0)" != 0 ]] && take="sudo $take"
+    if command -v reptyr >/dev/null 2>&1; then
+        hint "take it over here:" "$take" "a blank screen: press Ctrl-L"
+    else
+        hint "take it over here:" "$take" "needs reptyr: apt install reptyr"
+    fi
+    hint "or end that login:" "kill -HUP $H_PID"
+    if [[ -n "${P_ID[i]}" ]] && resume_cmd "$i"; then
+        hint "then reopen it:" "cd $(printf '%q' "${P_CWD[i]}") && $(printf '%q ' "${RESUME[@]}" | sed 's/ $//')"
+    fi
+    return 0
+}
+
 # ── the table ───────────────────────────────────────────────────────────────
 
 # collect — fills P_* arrays, one entry per claude process, oldest first.
@@ -242,6 +345,8 @@ show_list() {
         elif [[ "${P_TTY[i]:-?}" == "?" ]]; then
             printf '         no terminal: a script'"'"'s claude -p, or a session whose terminal closed\n'
             hint "clean leaves it; lost?" "kill ${P_PID[i]}"
+        else
+            lost_hints "$i" || true
         fi
     done
     local n=0
@@ -336,6 +441,7 @@ cmd_fg() {
         printf 'a lost session? end it: %s\n' "$(type_cmd "kill $pid")"
     elif [[ "${P_STATE[IDX]}" != stopped ]]; then
         printf 'pid %s is running in %s — switch to that terminal\n' "$pid" "$tty"
+        lost_hints "$IDX" || true
     elif [[ "${P_SHELL[IDX]}" == gone ]]; then
         printf 'pid %s is stopped and the shell that ran it is gone — no fg possible.\n' "$pid"
         printf 'reopen it here: %s\n' "$(type_cmd "claude-procs resume $pid")"
@@ -364,23 +470,8 @@ cmd_resume() {
     [[ -n "$sid" ]] || die "pid $pid: session id unknown (no sessions/$pid.json, no --resume) — find it with claude-sessions -p"
     [[ -d "$cwd" ]] || die "pid $pid: its directory '$cwd' is gone"
 
-    # The original flags, without the ones that pick a session: the resumed
-    # process gets --resume <id> instead. Under npm argv starts with the
-    # interpreter and the script path; the flags follow the script.
-    proc_args "$pid"
-    local k first=1
-    for ((k = 0; k < ${#ARGS[@]} && k < 2; k++)); do
-        [[ "${ARGS[k]##*/}" == "$COMM" ]] && first=$((k + 1))
-    done
-    local -a cmd=("$CLAUDE_BIN") a=("${ARGS[@]:first}")
-    for ((k = 0; k < ${#a[@]}; k++)); do
-        case "${a[k]}" in
-            --resume|-r) k=$((k + 1)) ;;
-            --resume=*|--continue|-c) ;;
-            *) cmd+=("${a[k]}") ;;
-        esac
-    done
-    cmd+=(--resume "$sid")
+    resume_cmd "$i" || die "pid $pid: cannot read its command line"
+    local -a cmd=("${RESUME[@]}")
 
     local shown
     shown="$(printf '%q ' "${cmd[@]}")"
