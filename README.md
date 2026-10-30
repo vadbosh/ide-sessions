@@ -535,6 +535,11 @@ types into it, `reptyr` included. It gets one line, `in use`, and no commands.
 `CLAUDE_PROCS_IDLE` changes the 2 minutes. A terminal held by tmux or screen
 gets nothing, because you reattach to it there.
 
+After `reptyr -T` the session still shows its old terminal and its old sshd in
+`ps`, so `claude-procs` looks at who holds the master side of that terminal.
+When it is `reptyr`, the list says so, and offers nothing to run:
+`taken over: reptyr 583979 shows it in pts/4`.
+
 `resume` and `clean` end only a stopped process (state `T`). A running process
 is listed and never gets a signal: idle at its prompt, busy, or the session in
 which you run `claude-procs`. `resume` refuses a running process, because two

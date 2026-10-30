@@ -25,6 +25,7 @@
 # long that terminal has had no input, and prints what to type: reptyr -T PID
 # takes the whole terminal over into this one (a blank screen: press Ctrl-L);
 # or kill -HUP the sshd of that login and reopen the session with --resume.
+# One already taken over with reptyr gets a line saying where it is now.
 # A terminal that had input in the last CLAUDE_PROCS_IDLE seconds is in use —
 # someone types into it, reptyr included — and gets no commands, only a line.
 #
@@ -246,11 +247,33 @@ resume_cmd() {
     RESUME+=(--resume "${P_ID[i]}")
 }
 
+# taken_by TTY — the reptyr that holds the master side of TTY (pts/N), as
+# "PID TTY-of-reptyr", into TAKEN. A terminal taken over with reptyr -T keeps
+# its name and its sshd parent in ps, so only the holders of /dev/ptmx say
+# where it went: /proc/PID/fdinfo/FD gives the index of the pts behind each.
+taken_by() {
+    TAKEN=""
+    [[ "$1" == pts/* ]] || return 1
+    local n="${1#pts/}" dir fd p
+    while read -r dir fd; do
+        p="${dir#/proc/}"; p="${p%%/*}"
+        [[ "$(cat "/proc/$p/comm" 2>/dev/null)" == reptyr ]] || continue
+        grep -qx "tty-index:[[:space:]]*$n" "/proc/$p/fdinfo/$fd" 2>/dev/null || continue
+        TAKEN="$p $(proc_tty "$p")"
+        return 0
+    done < <(find /proc/[0-9]*/fd -lname /dev/ptmx -printf '%h %f\n' 2>/dev/null)
+    return 1
+}
+
 # lost_hints IDX — a running session on a terminal held by sshd, not this one:
 # its connection may have dropped. Prints nothing, and fails, for any other.
 lost_hints() {
     local i="$1" pid="${P_PID[$1]}" tty="${P_TTY[$1]:-?}" take
     [[ "${P_STATE[i]}" == running && "$tty" != "?" && "$tty" != "$OWN_TTY" && -z "${P_MINE[i]}" ]] || return 1
+    if taken_by "$tty"; then
+        printf '         taken over: reptyr %s shows it in %s\n' "${TAKEN%% *}" "${TAKEN#* }"
+        return 0
+    fi
     holder_of "${P_SHELL[i]}" || return 1
     local idle; idle="$(idle_secs "$tty")"
     if [[ -n "$idle" && "$idle" -lt "$IDLE_SECS" ]]; then

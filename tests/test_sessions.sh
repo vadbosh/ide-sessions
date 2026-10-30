@@ -2033,6 +2033,21 @@ if command -v script >/dev/null 2>&1; then
     contains "claude-procs: fg on it gives the same commands"        "$out" "reptyr -T $P_L"
     kill -KILL -- "-$L_SHELL" "-$P_SHELL_" 2>/dev/null
     gone "$P_L" && gone "$P_P" || nope "claude-procs: the sshd fakes are gone after the test"
+    # Taken over with reptyr -T: reptyr holds the master side of the terminal.
+    # A copy of script(1) named reptyr holds the one its fake runs on.
+    cp "$(command -v script)" "$TMP/cp/reptyr"
+    CP_PIDFILE="$TMP/cp/l-r.pid" CP_DRAFT="$TMP/cp/prompts/claude-prompt-m.md" \
+        "$TMP/cp/reptyr" -qfec "bash -c '\"$TMP/cp/bin/$CP_COMM\" --resume $CP_SID_R & wait'" /dev/null \
+        </dev/null >/dev/null 2>&1 &
+    for i in $(seq 50); do [ -s "$TMP/cp/l-r.pid" ] && break; sleep 0.1; done
+    P_T="$(cat "$TMP/cp/l-r.pid")"; T_SHELL="$(ps -o sid= -p "$P_T" | tr -d ' ')"
+    T_HOLDER="$(ps -o ppid= -p "$T_SHELL" | tr -d ' ')"
+    out="$(CLAUDE_PROCS_IDLE=0 "$CP" 2>&1)"
+    row="$(printf '%s\n' "$out" | sed -n "/^$P_T /,/^[0-9]/p")"
+    contains "claude-procs: a terminal taken over by reptyr says so"  "$row" "taken over: reptyr $T_HOLDER"
+    absent   "claude-procs: ... and offers nothing to run"            "$row" "kill -HUP"
+    kill -KILL -- "-$T_SHELL" 2>/dev/null
+    gone "$P_T" || nope "claude-procs: the reptyr fake is gone after the test"
 fi
 
 # ── report ──────────────────────────────────────────────────────────────────

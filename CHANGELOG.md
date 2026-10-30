@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.18.3
+
+- **After `reptyr -T` the list advised killing the sshd under the session just
+  taken over.** The terminal keeps its name and its sshd parent in `ps`, and
+  once its input had been idle for two minutes 0.18.2 printed `kill -HUP` for
+  that sshd again. `claude-procs` now looks at who holds `/dev/ptmx` for the
+  terminal (`/proc/PID/fdinfo` gives its `tty-index`): when it is `reptyr`, the
+  list says `taken over: reptyr PID shows it in pts/X` and offers nothing to
+  run. Seen on the live session the feature was made for.
+
 ## 0.18.2
 
 - **A session whose ssh connection dropped is not stopped, and `claude-procs`
