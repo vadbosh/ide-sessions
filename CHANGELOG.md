@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.20.0
+
+- **`dev-soft-clean.sh` lives here now** and `install.sh` puts it where it was,
+  `~/.local/bin/dev-soft-clean.sh`. It frees the disk the IDEs fill: npm, uv,
+  pip, go and bun caches, old opencode logs and cache leftovers, stale Codex
+  app-server releases, stale Claude Code versions and orphaned plugin
+  versions; a dry run by default, `--apply` to delete.
+- **`dev-soft-clean.sh --apply` was blocked for good.** It treated every
+  process named claude, codex or opencode as an open IDE, so the background
+  services of Codex and opencode 2.x (`codex app-server`, `opencode serve`,
+  running all the time with PPID 1) and a zombie `codex` blocked it. Zombies
+  are skipped, the services are listed apart and do not block: their cache
+  locks are caught by the holder check, and the live Codex release is kept by
+  the step that deletes releases.
+- **README and `install.sh --help` said six commands**; there are nine now.
+
 ## 0.19.1
 
 - **`codex-sessions --rm` left the session behind in Codex's own records.** It

@@ -7,7 +7,8 @@ for one session by its id. A fifth, `ide-history`, shows what was said in a
 session — your prompts, or the whole conversation — after the session is gone.
 A sixth, `claude-procs`, finds a Claude Code session stopped by Ctrl-Z, or
 left behind by a dropped ssh connection, and gets it back; `codex-procs` and
-`opencode-procs` do the same for Codex and opencode.
+`opencode-procs` do the same for Codex and opencode. `dev-soft-clean.sh` frees
+the disk the three IDEs and their tools fill with caches and old releases.
 
 [Русская версия](README.RU.md) · [Changelog](CHANGELOG.md)
 
@@ -85,7 +86,7 @@ cost — and writes everything else, tool calls included, to a file.
 ```bash
 git clone <this repo> ide-sessions
 cd ide-sessions
-./install.sh              # six commands into ~/.local/bin, the history skill and /history into each assistant
+./install.sh              # nine commands into ~/.local/bin, the history skill and /history into each assistant
 ./install.sh --dry-run    # see what it would do first
 ```
 
@@ -588,6 +589,31 @@ the command line names the session directly. Two windows in one directory
 can be told apart only that way. `resume` reopens a session with
 `codex resume <id>` or `opencode -s <id>` and the window's other options.
 The background server is never listed and never ended.
+
+## Disk space: `dev-soft-clean.sh`
+
+The three IDEs and the tools around them grow caches and keep old releases:
+the Codex app-server keeps every auto-updated release (about 400 MB each),
+Claude Code one binary per version, uv and npm their caches.
+`dev-soft-clean.sh` lists what can go, and with `--apply` removes it.
+
+```bash
+dev-soft-clean.sh                 # dry run: sizes, what would go, what blocks
+dev-soft-clean.sh --apply         # do it
+dev-soft-clean.sh --apply --uv-clean   # also wipe the uv caches, not just prune them
+```
+
+It keeps what is live: the Codex release that `current` points at and any
+release a process runs from, the Claude Code version the `claude` launcher
+points at, the installed plugin versions, `opencode.db`.
+
+`--apply` refuses to run while an IDE window is open, or while any process
+holds a cache it would clean — an MCP server's `uv`, for example. The
+background services of Codex and opencode 2.x (`codex app-server`,
+`opencode serve`) run all the time and do not block; their cache locks are
+caught by the second check. A process that has exited and not been reaped
+yet (a zombie) does not count. Run `--apply` from a plain terminal with every
+IDE window closed.
 
 ## How `--sum` works
 

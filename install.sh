@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the ide-sessions tools — Linux / macOS.
 #
-#   ./install.sh                 install the six commands on PATH, and the
+#   ./install.sh                 install the nine commands on PATH, and the
 #                                history skill and /history command into
 #                                every assistant found
 #   ./install.sh --dry-run       print what would happen, change nothing
@@ -35,7 +35,7 @@ set -euo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${IDE_SESSIONS_BIN_DIR:-$HOME/.local/bin}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-COMMANDS="claude-sessions codex-sessions opencode-sessions billing ide-history claude-procs codex-procs opencode-procs"
+COMMANDS="claude-sessions codex-sessions opencode-sessions billing ide-history claude-procs codex-procs opencode-procs dev-soft-clean.sh"
 RETIRED="agent-history"
 BACKUPS="${XDG_STATE_HOME:-$HOME/.local/state}/ide-sessions/backups"
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"

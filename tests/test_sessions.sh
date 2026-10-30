@@ -1997,6 +1997,8 @@ while read -r installed source; do
 done <<'PAIRS'
 .local/bin/ide-history bin/ide-history
 .local/bin/claude-sessions bin/claude-sessions
+.local/bin/dev-soft-clean.sh bin/dev-soft-clean.sh
+.local/bin/codex-procs bin/codex-procs
 .claude/skills/history/SKILL.md skills/history/SKILL.md
 .claude/commands/history.md commands/history.md
 .codex/skills/history/SKILL.md skills/history/SKILL.md
