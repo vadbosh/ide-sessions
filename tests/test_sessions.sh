@@ -1481,6 +1481,13 @@ contains "ABOUT: opencode reads its tool parts"               "$out" "commit: op
 out="$("$ROOT/bin/opencode-sessions" --help 2>&1)"
 contains "ABOUT: opencode counts the threshold in messages, 50 by default" "$out" "(default: 50)"
 
+"$ROOT/bin/dev-soft-clean.sh" --help >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 0 ]; then ok "dev-soft-clean.sh --help exits 0, so install.sh sees it start"
+else nope "dev-soft-clean.sh --help exits 0, so install.sh sees it start" "rc=$rc"; fi
+"$ROOT/bin/dev-soft-clean.sh" --bogus >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 1 ]; then ok "dev-soft-clean.sh: an unknown flag exits 1"
+else nope "dev-soft-clean.sh: an unknown flag exits 1" "rc=$rc"; fi
+
 # On a terminal a long ABOUT wraps rather than being cut. A narrow window has no
 # room under the column, so the rest goes to the next line, indented.
 if command -v script >/dev/null 2>&1; then

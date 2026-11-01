@@ -90,17 +90,21 @@ fi
 # file lives as long as any link to it does.
 UV_CLEAN=0
 
+usage() {
+  echo "Usage: $(basename "$0") [--dry-run|--apply] [--uv-clean]"
+  echo "  --uv-clean  wipe uv caches entirely (uv cache clean) instead of"
+  echo "              pruning them — reclaims reachable wheels, forces re-download"
+}
+
+# --help is a request, not a mistake: usage on stdout and exit 0, so install.sh
+# can run it as its check that the installed copy starts. Anything unknown is.
 for arg in "$@"; do
   case "$arg" in
     --apply)     MODE="apply" ;;
     --dry-run)   MODE="dry-run" ;;
     --uv-clean)  UV_CLEAN=1 ;;
-    *)
-      echo "Usage: $(basename "$0") [--dry-run|--apply] [--uv-clean]" >&2
-      echo "  --uv-clean  wipe uv caches entirely (uv cache clean) instead of" >&2
-      echo "              pruning them — reclaims reachable wheels, forces re-download" >&2
-      exit 1
-      ;;
+    -h|--help)   usage; exit 0 ;;
+    *)           usage >&2; exit 1 ;;
   esac
 done
 

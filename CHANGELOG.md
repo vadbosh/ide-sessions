@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.20.2
+
+- **`install.sh` said `dev-soft-clean.sh did not run`** after every install,
+  though the script was in place and worked. The installer checks each command
+  with `--help`, and `dev-soft-clean.sh` took `--help` for an unknown flag and
+  exited 1. Now `-h` and `--help` print the usage to stdout and exit 0; an
+  unknown flag still exits 1.
+
 ## 0.20.1
 
 - **`opencode-sessions` shows ABOUT from 50 messages, not 500.** MSGS counts
