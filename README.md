@@ -214,8 +214,8 @@ only its files. A session that neither committed nor edited shows its last
 request. Files in `/tmp` appear only when the session edited nothing else. The
 line is masked like the digest of `--sum` — see [Credentials](#credentials).
 
-`--about-min N` moves the threshold; in opencode it counts messages (`MSGS`).
-Below the threshold the column stays empty, and when no session reaches it, the
+`--about-min N` moves the threshold. In opencode it counts messages (`MSGS`)
+and is 50 by default. Below the threshold the column stays empty, and when no session reaches it, the
 column is not printed. On a terminal, a long ABOUT wraps. When the window
 leaves the column 50 characters, the text continues under it. Otherwise the
 whole text starts on the next line, indented, across the whole width. In a pipe it stays

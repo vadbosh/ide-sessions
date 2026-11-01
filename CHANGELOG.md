@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.20.1
+
+- **`opencode-sessions` shows ABOUT from 50 messages, not 500.** MSGS counts
+  messages, and an opencode session rarely reaches 500 of them, so the column
+  never appeared. 50 keeps the proportion of the colour threshold, which is
+  100 messages in opencode and 1000 turns in the other two. `--about-min N`
+  still moves it.
+
 ## 0.20.0
 
 - **`dev-soft-clean.sh` lives here now** and `install.sh` puts it where it was,

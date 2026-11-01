@@ -1478,6 +1478,8 @@ out="$(CODEX_HOME="$AB/codex" IDE_SESSIONS_REDACTOR='' "$ROOT/bin/codex-sessions
 contains "ABOUT: codex reads apply_patch and exec_command"    "$out" "commit: codex: wire the handler; edit main.go"
 out="$(OPENCODE_DATA_DIR="$AB/opencode" IDE_SESSIONS_REDACTOR='' "$ROOT/bin/opencode-sessions" --about-min 3 2>&1)"
 contains "ABOUT: opencode reads its tool parts"               "$out" "commit: opencode: index page; edit index.html"
+out="$("$ROOT/bin/opencode-sessions" --help 2>&1)"
+contains "ABOUT: opencode counts the threshold in messages, 50 by default" "$out" "(default: 50)"
 
 # On a terminal a long ABOUT wraps rather than being cut. A narrow window has no
 # room under the column, so the rest goes to the next line, indented.

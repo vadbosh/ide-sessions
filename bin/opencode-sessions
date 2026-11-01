@@ -39,7 +39,7 @@ RM_ALL=0
 EVERYWHERE=0
 OLDER_THAN=""
 MAX_TURNS=""
-ABOUT_MIN=500
+ABOUT_MIN=50     # messages, as MSGS counts them: a tenth of the 500 turns of the others
 SEARCH=""
 MIN_HITS=1
 SEARCH_ALL=0
@@ -111,8 +111,8 @@ Usage: opencode-sessions [-n LIMIT] [-f] [-p] [substring]
   -f                full dir path instead of last 3 components
   -p                only sessions whose directory == $PWD exactly
   substring         filter by dir substring
-  --about-min N     ABOUT column for sessions of N turns or more: the last
-                    commit and the last files edited (default: 500)
+  --about-min N     ABOUT column for sessions of N messages or more: the last
+                    commit and the last files edited (default: 50)
 
 Search:
   --search REGEX    only sessions that mention REGEX — Python syntax, any case,
