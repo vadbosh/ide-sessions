@@ -1990,6 +1990,7 @@ echo "install.sh"
 IN_HOME="$TMP/in-home"
 inst() {
     env -u CLAUDE_CONFIG_DIR -u CODEX_HOME -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u IDE_SESSIONS_BIN_DIR \
+        -u XDG_DATA_HOME -u BASH_COMPLETION_USER_DIR \
         HOME="$IN_HOME" bash "$ROOT/install.sh" "$@" >"$TMP/inst.out" 2>&1
 }
 in_state() { (cd "$IN_HOME" && find . -type f -not -path './.local/state/*' -exec md5sum {} + | sort -k2); }
@@ -2008,6 +2009,8 @@ done <<'PAIRS'
 .local/bin/claude-sessions bin/claude-sessions
 .local/bin/dev-soft-clean.sh bin/dev-soft-clean.sh
 .local/bin/codex-procs bin/codex-procs
+.local/share/bash-completion/completions/claude-sessions completion/ide-sessions.bash
+.local/share/bash-completion/completions/dev-soft-clean.sh completion/ide-sessions.bash
 .claude/skills/history/SKILL.md skills/history/SKILL.md
 .claude/commands/history.md commands/history.md
 .codex/skills/history/SKILL.md skills/history/SKILL.md
@@ -2334,6 +2337,109 @@ if [ -n "$(pr_block claude)" ] && [ "$(pr_block claude)" = "$(pr_block codex)" ]
 else
     nope "procs: the three copies of the shared part are identical"
 fi
+
+# ── Tab completion ──────────────────────────────────────────────────────────
+echo "completion"
+COMP_FILE="$ROOT/completion/ide-sessions.bash"
+# comp DIR LINE — what Tab offers at the end of LINE, run in DIR. A trailing
+# space means a new, empty word.
+comp() {
+    (cd "$1" && bash -c '
+        . "$1"
+        read -ra COMP_WORDS <<<"$2"
+        [ "${2: -1}" = " " ] && COMP_WORDS+=("")
+        COMP_CWORD=$(( ${#COMP_WORDS[@]} - 1 ))
+        fn=$(complete -p "${COMP_WORDS[0]}" | sed -E "s/.*-F ([^ ]+) .*/\1/")
+        "$fn" "${COMP_WORDS[0]}"
+        printf "%s\n" "${COMPREPLY[@]}"' _ "$COMP_FILE" "$2" 2>/dev/null) | tr '\n' ' ' | sed 's/ *$//'
+}
+same() { if [ "$2" = "$3" ]; then ok "$1"; else nope "$1" "want: $3 | got: $2"; fi; }
+
+# The options each command parses — its case labels — against the list Tab
+# offers: every label has a spelling on the list, every listed word is a label.
+labels() { rg -o '^\s+(-[-a-zA-Z0-9| ]*)\)' -r '$1' "$ROOT/bin/$1" | tr -d ' ' | sort -u; }
+comp_list() { bash -c '. "$1"; eval "printf \"%s\\n\" \$$2"' _ "$COMP_FILE" "$1" | tr ' ' '\n' | sed '/^$/d'; }
+check_opts() {   # check_opts COMMAND LIST-VARIABLE [LABELS-NOT-OFFERED]
+    local cmd="$1" list skip="${3:-}" missing="" extra="" l a w hit
+    list=" $(comp_list "$2" | tr '\n' ' ') "
+    while read -r l; do
+        case " $skip " in *" $l "*) continue ;; esac
+        hit=0
+        for a in ${l//|/ }; do case "$list" in *" $a "*) hit=1 ;; esac; done
+        [ "$hit" = 1 ] || missing+=" $l"
+    done < <(labels "$cmd")
+    for w in $list; do
+        labels "$cmd" | tr '|' '\n' | grep -qxF -- "$w" || extra+=" $w"
+    done
+    if [ -z "$missing$extra" ]; then ok "completion: $cmd — the options offered are the ones it parses"
+    else nope "completion: $cmd — the options offered are the ones it parses" "not offered:$missing  not parsed:$extra"; fi
+}
+for ide in claude codex opencode; do check_opts "$ide-sessions" _ides_sessions_opts; done
+check_opts ide-history _ides_history_opts "--file"
+check_opts billing _ides_billing_opts
+check_opts dev-soft-clean.sh _ides_clean_opts
+# The procs subcommands: the labels of the `case "$sub"` that dispatches them.
+for ide in claude codex opencode; do
+    subs="$(awk '/case "\$sub" in/ { on = 1; next } on && /esac/ { exit }
+                 on && match($0, /^ *[a-z]+\)/) { w = substr($0, RSTART, RLENGTH - 1); gsub(/ /, "", w); printf "%s ", w }' \
+            "$ROOT/bin/$ide-procs" | sed 's/ $//')"
+    same "completion: $ide-procs — the subcommands offered are the ones it dispatches" \
+        "$subs" "$(comp_list _ides_procs_subs | tr '\n' ' ' | sed 's/ $//')"
+done
+
+# Session ids: this directory's only, newest first. One fixture per IDE, each
+# with a session in another directory that must never be offered.
+CP="$TMP/comp"; HERE="$CP/work/proj.x"; mkdir -p "$HERE" "$CP/elsewhere"
+CL_P="$CP/claude/projects"
+mkdir -p "$CL_P/$(printf '%s' "$HERE" | sed -E 's/[^a-zA-Z0-9]/-/g')" "$CL_P/-other"
+for s in aaaa1111-0000-0000-0000-000000000001:1000 aaaa2222-0000-0000-0000-000000000002:2000; do
+    f="$CL_P/$(printf '%s' "$HERE" | sed -E 's/[^a-zA-Z0-9]/-/g')/${s%%:*}.jsonl"
+    : > "$f"; touch -d "@$((1700000000 + ${s##*:}))" "$f"
+done
+: > "$CL_P/-other/bbbb0000-0000-0000-0000-000000000003.jsonl"
+CXD="$CP/codex/sessions/2026/11/03"; mkdir -p "$CXD"
+cx_roll() {   # cx_roll ID CWD MTIME [PARENT]
+    local f="$CXD/rollout-2026-11-03T00-00-00-$1.jsonl" par=""
+    [ -n "${4:-}" ] && par=",\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"$4\"}}}"
+    printf '{"type":"session_meta","payload":{"id":"%s","cwd":"%s"%s}}\n' "$1" "$2" "$par" > "$f"
+    touch -d "@$((1700000000 + $3))" "$f"
+}
+cx_roll 01aaaaaa-0000-7000-8000-000000000001 "$HERE" 1000
+cx_roll 01aaaaaa-0000-7000-8000-000000000002 "$HERE" 3000
+cx_roll 01aaaaaa-0000-7000-8000-000000000003 "$HERE" 4000 01aaaaaa-0000-7000-8000-000000000002
+cx_roll 01aaaaaa-0000-7000-8000-000000000004 "$CP/elsewhere" 5000
+OCD="$CP/opencode"; mkdir -p "$OCD"
+python3 - "$OCD/opencode.db" "$HERE" "$CP/elsewhere" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.execute("CREATE TABLE session_v2 (id TEXT, directory TEXT, time_updated INTEGER)")
+con.executemany("INSERT INTO session_v2 VALUES (?,?,?)", [
+    ('ses_old', sys.argv[2], 1000), ('ses_new', sys.argv[2], 2000), ('ses_far', sys.argv[3], 3000)])
+con.commit()
+PY
+export CLAUDE_CONFIG_DIR="$CP/claude" CODEX_HOME="$CP/codex" OPENCODE_DATA_DIR="$OCD"
+same "completion: claude-sessions --rm offers this directory's ids, newest first" \
+    "$(comp "$HERE" 'claude-sessions --rm ')" "aaaa2222-0000-0000-0000-000000000002 aaaa1111-0000-0000-0000-000000000001"
+same "completion: codex-sessions --sum folds a subagent into its session, as the listing does" \
+    "$(comp "$HERE" 'codex-sessions --sum ')" "01aaaaaa-0000-7000-8000-000000000002 01aaaaaa-0000-7000-8000-000000000001"
+same "completion: opencode-sessions --rm reads session_v2" \
+    "$(comp "$HERE" 'opencode-sessions --rm ses_')" "ses_new ses_old"
+same "completion: after a comma the next id, the ids before it kept" \
+    "$(comp "$HERE" 'opencode-sessions --rm ses_new,ses_o')" "ses_new,ses_old"
+same "completion: ide-history --id offers all three IDEs' ids of this directory" \
+    "$(comp "$HERE" 'ide-history --id ' | wc -w | tr -d ' ')" 6
+same "completion: --ide narrows ide-history --id to one IDE" \
+    "$(comp "$HERE" 'ide-history --ide opencode --id ')" "ses_new ses_old"
+same "completion: billing --id the same" \
+    "$(comp "$HERE" 'billing --ide codex --id ')" "01aaaaaa-0000-7000-8000-000000000002 01aaaaaa-0000-7000-8000-000000000001"
+same "completion: a directory with no sessions offers no id, not every project's" \
+    "$(comp "$CP" 'claude-sessions --rm ')$(comp "$CP" 'codex-sessions --rm ')$(comp "$CP" 'opencode-sessions --rm ')" ""
+unset CLAUDE_CONFIG_DIR CODEX_HOME OPENCODE_DATA_DIR
+same "completion: an option already on the line is not offered again" \
+    "$(comp "$HERE" 'claude-sessions -p --sum-r')" "--sum-refresh --sum-raw"
+same "completion: billing offers its periods" "$(comp "$HERE" 'billing ')" "days weeks months today block"
+same "completion: the procs subcommands" "$(comp "$HERE" 'codex-procs ')" "list fg resume clean --help"
+same "completion: dev-soft-clean.sh options" "$(comp "$HERE" 'dev-soft-clean.sh --a')" "--apply"
 
 # ── report ──────────────────────────────────────────────────────────────────
 echo

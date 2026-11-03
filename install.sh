@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Install the ide-sessions tools — Linux / macOS.
 #
-#   ./install.sh                 install the nine commands on PATH, and the
-#                                history skill and /history command into
-#                                every assistant found
+#   ./install.sh                 install the nine commands on PATH, their Tab
+#                                completion for bash, and the history skill
+#                                and /history command into every assistant found
 #   ./install.sh --dry-run       print what would happen, change nothing
 #   ./install.sh --bin-dir D     install the commands into D instead of ~/.local/bin
 #   ./install.sh --uninstall     remove everything this script installed
@@ -23,6 +23,10 @@
 # session records: a session stopped by Ctrl-Z, or left behind by a dropped ssh
 # connection, is found there and reopened. Linux only.
 #
+# Tab completion is one file, completion/ide-sessions.bash, put into the
+# directory bash-completion reads for this user once under each command's name:
+# bash-completion loads a file by the name of the command Tab follows.
+#
 # Idempotent: re-running replaces only what changed. A file it overwrites is
 # backed up ONLY when that content is not already in the source repository — a
 # hand edit is the one thing git cannot give back. Every backup goes to
@@ -41,6 +45,10 @@ BACKUPS="${XDG_STATE_HOME:-$HOME/.local/state}/ide-sessions/backups"
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
 OPENCODE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
+# bash-completion looks in each directory of BASH_COMPLETION_USER_DIR, else in
+# $XDG_DATA_HOME/bash-completion; the first one is where the completion goes.
+COMPDIR="${BASH_COMPLETION_USER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion}"
+COMPDIR="${COMPDIR%%:*}/completions"
 
 DRY_RUN=0
 UNINSTALL=0
@@ -49,7 +57,7 @@ while [ $# -gt 0 ]; do
         --dry-run)   DRY_RUN=1 ;;
         --uninstall) UNINSTALL=1 ;;
         --bin-dir)   BIN_DIR="${2:-}"; shift ;;
-        -h|--help)   sed -n '2,31p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
+        -h|--help)   sed -n '2,36p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
@@ -150,6 +158,16 @@ if [ "$UNINSTALL" -eq 1 ]; then
             say "    - $(tilde "$dst")"
         fi
     done < <(assistant_files)
+    for cmd in $COMMANDS; do
+        dst="$COMPDIR/$cmd"
+        [ -f "$dst" ] || continue
+        if [ "$DRY_RUN" -eq 1 ]; then
+            say "    would remove $(tilde "$dst")"
+        else
+            rm -f "$dst"
+            say "    - $(tilde "$dst")"
+        fi
+    done
     for cmd in $RETIRED; do
         dst="$BIN_DIR/$cmd"
         [ -f "$dst" ] || continue
@@ -200,6 +218,20 @@ for cmd in $RETIRED; do
         say "    - $(tilde "$dst")  (replaced by ide-history)"
     fi
 done
+
+say "── Tab completion ──"
+say "  $(tilde "$COMPDIR")"
+for cmd in $COMMANDS; do
+    install_file "$SRC/completion/ide-sessions.bash" "$COMPDIR/$cmd" 644
+done
+# Without the package the files are in place, but nothing loads them.
+if [ -r /usr/share/bash-completion/bash_completion ] || [ -r /etc/bash_completion ] ||
+   [ -r /opt/homebrew/etc/profile.d/bash_completion.sh ] || [ -r /usr/local/etc/profile.d/bash_completion.sh ]; then
+    ok "    bash-completion — Tab works in a new terminal"
+else
+    warn "    no bash-completion — Tab will not offer anything after these commands"
+    say  "      apt install bash-completion, or add to ~/.bashrc: . $(tilde "$COMPDIR/claude-sessions")"
+fi
 
 say "── history skill and /history ──"
 while read -r src dst; do

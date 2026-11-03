@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.21.0
+
+- **Tab completion for bash**, for all nine commands. `install.sh` puts
+  `completion/ide-sessions.bash` into
+  `~/.local/share/bash-completion/completions/` under each command's name.
+  Tab offers the options not yet on the line, the subcommands of
+  `ide-history`, `billing` and the `*-procs` commands, and the session ids
+  after `--rm`, `--sum`, `--sum-orig` and `--id`.
+- **Only the ids of the current directory**, newest first, in the sense of
+  `-p` in each command. A directory with no sessions offers none. The ids are
+  read from each IDE's storage directly, in under 0.1 s; running the commands
+  would take one to three seconds per Tab.
+- The tests compare the options offered with the ones each command parses, so
+  a new option without completion fails them.
+
 ## 0.20.2
 
 - **`install.sh` said `dev-soft-clean.sh did not run`** after every install,

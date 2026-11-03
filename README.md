@@ -100,6 +100,17 @@ and `billing` says how to install them when they are not.
 `--search` in `claude-sessions` and `codex-sessions` also needs ripgrep
 (`rg`); the installer says whether it is there.
 
+The installer also adds Tab completion for bash. In a new terminal, Tab offers
+the options and subcommands of every command. After `--rm`, `--sum` and
+`--sum-orig`, and after `--id` in `ide-history` and `billing`, it offers the ids
+of the sessions of the current directory, newest first. Sessions of other
+directories are never offered: Tab in a directory with no sessions offers no
+id. After a comma in `--rm`, Tab completes the next id. After `fg` and
+`resume`, the `*-procs` commands offer the pids of the IDE windows.
+
+Completion needs the `bash-completion` package. Without it, add this line to
+`~/.bashrc`: `. ~/.local/share/bash-completion/completions/claude-sessions`.
+
 Uninstall: `./install.sh --uninstall`.
 
 ## Search: which session worked on it
