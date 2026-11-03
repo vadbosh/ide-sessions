@@ -2437,7 +2437,14 @@ same "completion: a directory with no sessions offers no id, not every project's
 unset CLAUDE_CONFIG_DIR CODEX_HOME OPENCODE_DATA_DIR
 same "completion: an option already on the line is not offered again" \
     "$(comp "$HERE" 'claude-sessions -p --sum-r')" "--sum-refresh --sum-raw"
-same "completion: billing offers its periods" "$(comp "$HERE" 'billing ')" "days weeks months today block"
+same "completion: -p<Tab> completes -p itself, not nothing" \
+    "$(comp "$HERE" 'claude-sessions -p')" "-p"
+same "completion: an empty word after claude-sessions offers the options" \
+    "$(comp "$HERE" 'claude-sessions -p ' | cut -d' ' -f1-3)" "-n -f --about-min"
+same "completion: billing offers its periods, then its options" \
+    "$(comp "$HERE" 'billing ')" "days weeks months today block --id --ide --since --until -n --json --help"
+same "completion: after a period, billing offers only the options left" \
+    "$(comp "$HERE" 'billing days --json ')" "--id --ide --since --until -n --help"
 same "completion: the procs subcommands" "$(comp "$HERE" 'codex-procs ')" "list fg resume clean --help"
 same "completion: dev-soft-clean.sh options" "$(comp "$HERE" 'dev-soft-clean.sh --a')" "--apply"
 

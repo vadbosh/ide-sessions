@@ -126,15 +126,19 @@ _ides_reply_ids() {
     compopt -o nosort 2>/dev/null
 }
 
-# _ides_opts OPTIONS — the options not yet on the line.
-_ides_opts() {
-    local o w out=""
+# _ides_unused OPTIONS — the options not yet on the line; _ides_opts offers them.
+# The word under the cursor does not count: `-p<Tab>` completes -p itself.
+_ides_unused() {
+    local o i out=""
     for o in $1; do
-        for w in "${COMP_WORDS[@]}"; do [ "$w" = "$o" ] && continue 2; done
+        for ((i = 1; i < ${#COMP_WORDS[@]}; i++)); do
+            [ "$i" -ne "$COMP_CWORD" ] && [ "${COMP_WORDS[i]}" = "$o" ] && continue 2
+        done
         out+=" $o"
     done
-    _ides_reply "$out"
+    printf '%s' "$out"
 }
+_ides_opts() { _ides_reply "$(_ides_unused "$1")"; }
 
 # _ides_ide_of — the --ide value already on the line, if any.
 _ides_ide_of() {
@@ -157,8 +161,10 @@ _ides_sessions() {
         -n|--about-min|--search|--min-hits|--sum-model|--sum-gap|--older-than|--max-turns)
             return 0 ;;
     esac
+    # A word that is not an option is a directory substring: nothing to offer
+    # for it, so an empty word gets the options.
     case "$cur" in
-        -*) _ides_opts "$_ides_sessions_opts" ;;
+        -*|'') _ides_opts "$_ides_sessions_opts" ;;
     esac
     return 0
 }
@@ -184,9 +190,12 @@ _ides_history() {
     esac
     case "$cur" in
         -*) _ides_opts "$opts" ;;
+        # an empty word: the subcommand, if none is on the line yet, then the
+        # options
         *)  for ((i = 1; i < COMP_CWORD; i++)); do
-                case " $subs " in *" ${COMP_WORDS[i]} "*) return 0 ;; esac
+                case " $subs " in *" ${COMP_WORDS[i]} "*) subs="" ;; esac
             done
+            [ -z "$cur" ] && subs+=" $(_ides_unused "$opts")"
             _ides_reply "$subs" ;;
     esac
     return 0

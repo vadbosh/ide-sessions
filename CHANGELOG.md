@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.21.1
+
+- **Tab after `claude-sessions ` offered nothing.** Options were offered only
+  after a `-`. Now an empty word gets the options in `*-sessions`, and the
+  subcommands, then the options, in `ide-history` and `billing`.
+- **`-p<Tab>` offered nothing either.** The word being completed was counted
+  as an option already on the line, so it was never offered.
+
 ## 0.21.0
 
 - **Tab completion for bash**, for all nine commands. `install.sh` puts
