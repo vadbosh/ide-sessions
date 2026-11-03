@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.22.1
+
+- **The README no longer puts a path to this repository's file into the shell
+  configuration.** For your own resume function it shows `_ccr_complete`,
+  which loads the completion by the command name through bash-completion's
+  `_comp_load` on the first Tab. On a machine without ide-sessions, Tab offers
+  nothing and prints no error.
+
 ## 0.22.0
 
 - **Tab completion for your own resume function.** `_ides_resume_claude`,

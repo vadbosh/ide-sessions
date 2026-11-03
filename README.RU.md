@@ -110,18 +110,25 @@ cd ide-sessions
 `~/.bashrc` строку `. ~/.local/share/bash-completion/completions/claude-sessions`.
 
 Те же id можно подставлять в свою функцию, которая возобновляет сессию.
-Например, для `ccr() { claude --resume "$1"; }` добавьте в `~/.bashrc` после
-функции две строки:
+Например, для `ccr() { claude --resume "$1"; }` положите рядом с функцией в
+`~/.bashrc`:
 
 ```bash
-. ~/.local/share/bash-completion/completions/claude-sessions
-complete -F _ides_resume_claude ccr
+_ccr_complete() {
+    declare -F _ides_resume_claude >/dev/null || _comp_load claude-sessions 2>/dev/null
+    declare -F _ides_resume_claude >/dev/null && _ides_resume_claude
+}
+complete -F _ccr_complete ccr
 ```
 
 После этого `ccr <Tab>` предлагает id сессий текущего каталога — тех, которые
-`claude --resume` может найти. Первая строка нужна потому, что bash-completion
-загружает файл только при первом Tab после одной из команд, а про `ccr` он не
-знает. Для Codex и opencode — `_ides_resume_codex` и `_ides_resume_opencode`.
+`claude --resume` может найти. Файл дополнения bash-completion загружает по
+имени команды `claude-sessions` при первом Tab, поэтому оболочка стартует так
+же быстро, а пути к файлу этого репозитория в настройках оболочки нет. На
+машине без ide-sessions Tab после `ccr` ничего не предлагает и ошибок не
+выводит. `_comp_load` есть в bash-completion начиная с 2.12, в более старых —
+`_completion_loader`. Для Codex и opencode — `_ides_resume_codex` и
+`_ides_resume_opencode`.
 
 Удалить: `./install.sh --uninstall`.
 

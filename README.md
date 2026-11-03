@@ -112,19 +112,25 @@ Completion needs the `bash-completion` package. Without it, add this line to
 `~/.bashrc`: `. ~/.local/share/bash-completion/completions/claude-sessions`.
 
 The same ids can complete a function of your own that resumes a session. For
-example, for `ccr() { claude --resume "$1"; }`, add two lines to `~/.bashrc`
-after the function:
+example, for `ccr() { claude --resume "$1"; }`, put this next to the function
+in `~/.bashrc`:
 
 ```bash
-. ~/.local/share/bash-completion/completions/claude-sessions
-complete -F _ides_resume_claude ccr
+_ccr_complete() {
+    declare -F _ides_resume_claude >/dev/null || _comp_load claude-sessions 2>/dev/null
+    declare -F _ides_resume_claude >/dev/null && _ides_resume_claude
+}
+complete -F _ccr_complete ccr
 ```
 
 Then `ccr <Tab>` offers the ids of the sessions of the current directory. These
-are the sessions `claude --resume` can find. The first line is necessary:
-bash-completion loads the file only on the first Tab after one of the commands.
-It does not know `ccr`. For Codex and opencode, use
-`_ides_resume_codex` and `_ides_resume_opencode`.
+are the sessions `claude --resume` can find. On the first Tab,
+bash-completion loads the completion file by the command name
+`claude-sessions`. So the shell starts as fast as before, and the shell
+configuration holds no path to a file of this repository. On a machine without ide-sessions, Tab after
+`ccr` offers nothing and prints no error. `_comp_load` needs bash-completion
+2.12 or later; older versions have `_completion_loader`. For Codex and
+opencode, use `_ides_resume_codex` and `_ides_resume_opencode`.
 
 Uninstall: `./install.sh --uninstall`.
 

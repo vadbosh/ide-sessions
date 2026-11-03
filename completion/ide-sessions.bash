@@ -232,11 +232,15 @@ _ides_clean() {
 # ── your own resume function ────────────────────────────────────────────────
 # For a shell function or alias that takes a session id as its first argument,
 # such as  ccr() { claude --resume "$1"; }  — not registered here, the name is
-# yours. Two lines in ~/.bashrc, after the function:
-#   . ~/.local/share/bash-completion/completions/claude-sessions
-#   complete -F _ides_resume_claude ccr
-# The first line is needed because bash-completion loads this file only on the
-# first Tab after one of the commands above, and it does not know ccr.
+# yours. Next to the function, in the shell configuration:
+#   _ccr_complete() {
+#       declare -F _ides_resume_claude >/dev/null || _comp_load claude-sessions 2>/dev/null
+#       declare -F _ides_resume_claude >/dev/null && _ides_resume_claude
+#   }
+#   complete -F _ccr_complete ccr
+# bash-completion loads this file by the command name on the first Tab: no
+# path to it in the shell configuration, and nothing offered, no error, on a
+# machine without ide-sessions.
 # `claude --resume` finds only the sessions of the current directory's project,
 # so those are the ids offered.
 _ides_resume() {   # _ides_resume IDE
