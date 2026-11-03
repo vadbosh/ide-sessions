@@ -229,6 +229,26 @@ _ides_clean() {
     return 0
 }
 
+# ── your own resume function ────────────────────────────────────────────────
+# For a shell function or alias that takes a session id as its first argument,
+# such as  ccr() { claude --resume "$1"; }  — not registered here, the name is
+# yours. Two lines in ~/.bashrc, after the function:
+#   . ~/.local/share/bash-completion/completions/claude-sessions
+#   complete -F _ides_resume_claude ccr
+# The first line is needed because bash-completion loads this file only on the
+# first Tab after one of the commands above, and it does not know ccr.
+# `claude --resume` finds only the sessions of the current directory's project,
+# so those are the ids offered.
+_ides_resume() {   # _ides_resume IDE
+    local cur="${COMP_WORDS[COMP_CWORD]}"
+    COMPREPLY=()
+    [ "$COMP_CWORD" -eq 1 ] && _ides_reply "$("_ides_ids_$1")"
+    return 0
+}
+_ides_resume_claude()   { _ides_resume claude; }
+_ides_resume_codex()    { _ides_resume codex; }
+_ides_resume_opencode() { _ides_resume opencode; }
+
 complete -F _ides_sessions claude-sessions codex-sessions opencode-sessions
 complete -F _ides_history ide-history billing
 complete -F _ides_procs claude-procs codex-procs opencode-procs

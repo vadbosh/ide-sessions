@@ -109,6 +109,20 @@ cd ide-sessions
 Для автодополнения нужен пакет `bash-completion`. Без него добавьте в
 `~/.bashrc` строку `. ~/.local/share/bash-completion/completions/claude-sessions`.
 
+Те же id можно подставлять в свою функцию, которая возобновляет сессию.
+Например, для `ccr() { claude --resume "$1"; }` добавьте в `~/.bashrc` после
+функции две строки:
+
+```bash
+. ~/.local/share/bash-completion/completions/claude-sessions
+complete -F _ides_resume_claude ccr
+```
+
+После этого `ccr <Tab>` предлагает id сессий текущего каталога — тех, которые
+`claude --resume` может найти. Первая строка нужна потому, что bash-completion
+загружает файл только при первом Tab после одной из команд, а про `ccr` он не
+знает. Для Codex и opencode — `_ides_resume_codex` и `_ides_resume_opencode`.
+
 Удалить: `./install.sh --uninstall`.
 
 ## Поиск: в какой сессии над этим работали

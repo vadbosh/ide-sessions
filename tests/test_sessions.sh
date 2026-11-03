@@ -2434,6 +2434,23 @@ same "completion: billing --id the same" \
     "$(comp "$HERE" 'billing --ide codex --id ')" "01aaaaaa-0000-7000-8000-000000000002 01aaaaaa-0000-7000-8000-000000000001"
 same "completion: a directory with no sessions offers no id, not every project's" \
     "$(comp "$CP" 'claude-sessions --rm ')$(comp "$CP" 'codex-sessions --rm ')$(comp "$CP" 'opencode-sessions --rm ')" ""
+# A resume function of the user's own: ccr ID, hooked up with complete -F.
+comp_fn() {   # comp_fn DIR FUNCTION LINE
+    (cd "$1" && bash -c '
+        . "$1"
+        read -ra COMP_WORDS <<<"$3"
+        [ "${3: -1}" = " " ] && COMP_WORDS+=("")
+        COMP_CWORD=$(( ${#COMP_WORDS[@]} - 1 ))
+        "$2" "${COMP_WORDS[0]}"
+        printf "%s\n" "${COMPREPLY[@]}"' _ "$COMP_FILE" "$2" "$3" 2>/dev/null) | tr '\n' ' ' | sed 's/ *$//'
+}
+same "completion: ccr <Tab> through _ides_resume_claude offers this directory's ids" \
+    "$(comp_fn "$HERE" _ides_resume_claude 'ccr ')" "aaaa2222-0000-0000-0000-000000000002 aaaa1111-0000-0000-0000-000000000001"
+same "completion: _ides_resume_codex and _ides_resume_opencode the same" \
+    "$(comp_fn "$HERE" _ides_resume_codex 'cxr 01')|$(comp_fn "$HERE" _ides_resume_opencode 'ocr ses_n')" \
+    "01aaaaaa-0000-7000-8000-000000000002 01aaaaaa-0000-7000-8000-000000000001|ses_new"
+same "completion: a resume function takes one id, the second word gets none" \
+    "$(comp_fn "$HERE" _ides_resume_claude 'ccr aaaa2222-0000-0000-0000-000000000002 ')" ""
 unset CLAUDE_CONFIG_DIR CODEX_HOME OPENCODE_DATA_DIR
 same "completion: an option already on the line is not offered again" \
     "$(comp "$HERE" 'claude-sessions -p --sum-r')" "--sum-refresh --sum-raw"

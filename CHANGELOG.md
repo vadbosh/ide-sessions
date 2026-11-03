@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.22.0
+
+- **Tab completion for your own resume function.** `_ides_resume_claude`,
+  `_ides_resume_codex` and `_ides_resume_opencode` complete the first argument
+  with the ids of the current directory's sessions. Hook one up to a function
+  such as `ccr() { claude --resume "$1"; }` with two lines in `~/.bashrc`; the
+  README shows them.
+
 ## 0.21.1
 
 - **Tab after `claude-sessions ` offered nothing.** Options were offered only
