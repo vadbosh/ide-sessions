@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.22.2
+
+- **The README brought up to date with the releases since 0.19.0.** Tab
+  completion has a section of its own, linked from the introduction and named
+  in the install line. The environment table lists
+  `BASH_COMPLETION_USER_DIR` and says four `*_PROCS_*` variables, not five.
+  The Tests section says what the tests cover now, not only the digest.
+
 ## 0.22.1
 
 - **The README no longer puts a path to this repository's file into the shell

@@ -9,6 +9,8 @@ A sixth, `claude-procs`, finds a Claude Code session stopped by Ctrl-Z, or
 left behind by a dropped ssh connection, and gets it back; `codex-procs` and
 `opencode-procs` do the same for Codex and opencode. `dev-soft-clean.sh` frees
 the disk the three IDEs and their tools fill with caches and old releases.
+In bash, Tab completes the options of every command and the ids of the
+sessions of the current directory — see [Tab completion](#tab-completion).
 
 [Русская версия](README.RU.md) · [Changelog](CHANGELOG.md)
 
@@ -86,7 +88,7 @@ cost — and writes everything else, tool calls included, to a file.
 ```bash
 git clone <this repo> ide-sessions
 cd ide-sessions
-./install.sh              # nine commands into ~/.local/bin, the history skill and /history into each assistant
+./install.sh              # nine commands into ~/.local/bin, their Tab completion, the history skill and /history into each assistant
 ./install.sh --dry-run    # see what it would do first
 ```
 
@@ -99,6 +101,10 @@ and `billing` says how to install them when they are not.
 
 `--search` in `claude-sessions` and `codex-sessions` also needs ripgrep
 (`rg`); the installer says whether it is there.
+
+Uninstall: `./install.sh --uninstall`.
+
+## Tab completion
 
 The installer also adds Tab completion for bash. In a new terminal, Tab offers
 the options and subcommands of every command. After `--rm`, `--sum` and
@@ -131,8 +137,6 @@ configuration holds no path to a file of this repository. On a machine without i
 `ccr` offers nothing and prints no error. `_comp_load` needs bash-completion
 2.12 or later; older versions have `_completion_loader`. For Codex and
 opencode, use `_ides_resume_codex` and `_ides_resume_opencode`.
-
-Uninstall: `./install.sh --uninstall`.
 
 ## Search: which session worked on it
 
@@ -897,7 +901,8 @@ summarized with claude-haiku-4-5-20251001
 | `IDE_SESSIONS_REDACTOR` | `secrets-redact` on `PATH` | the redactor the digest and the ABOUT column go through; empty — the built-in patterns only |
 | `IDE_SESSIONS_TRASH` | `~/.cache/ide-sessions-trash` | where deletes go |
 | `IDE_SESSIONS_MODELS_JSON` | unset | a models.dev catalogue to price against |
-| `IDE_SESSIONS_BIN_DIR` | `~/.local/bin` | where `install.sh` writes |
+| `IDE_SESSIONS_BIN_DIR` | `~/.local/bin` | where `install.sh` writes the commands |
+| `BASH_COMPLETION_USER_DIR` | `~/.local/share/bash-completion` | where `install.sh` writes Tab completion, under `completions/` |
 | `CCUSAGE_BIN` | `ccusage` | the ccusage binary `billing` runs |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code storage |
 | `CODEX_HOME` | `~/.codex` | Codex storage |
@@ -905,8 +910,8 @@ summarized with claude-haiku-4-5-20251001
 | `CLAUDE_PROCS_BIN` | `claude` | the command `claude-procs resume` starts |
 | `CLAUDE_PROCS_WAIT` | `5` | seconds `claude-procs` waits after SIGTERM before SIGKILL |
 | `CLAUDE_PROCS_IDLE` | `120` | seconds without input before `claude-procs` offers to take over a terminal held by sshd |
-| `CODEX_PROCS_*`, `OPENCODE_PROCS_*` | | the same five for `codex-procs` and `opencode-procs`: `_COMM`, `_BIN`, `_WAIT`, `_IDLE` |
 | `CLAUDE_PROCS_COMM` | `claude` | the process name `claude-procs` looks for |
+| `CODEX_PROCS_*`, `OPENCODE_PROCS_*` | | the same four for `codex-procs` and `opencode-procs`: `_COMM`, `_BIN`, `_WAIT`, `_IDLE` |
 
 ## Notes per IDE
 
@@ -984,9 +989,14 @@ tests/test_sessions.sh
 ```
 
 Each test builds a throwaway storage tree under a temp dir — no test touches
-real transcripts, and none calls a model. What they check is the digest, which
-is the part that can be wrong without anyone noticing: a model will happily
-summarize a digest full of hook noise.
+real transcripts, and none calls a model. They cover the listing and its
+colours, deletion, `--search`, the ABOUT column, the opencode 2.x tables, the
+`*-procs` commands, `install.sh` and Tab completion. The digest matters
+most: it is the part that can be wrong without anyone noticing: a model will
+happily summarize a digest full of hook noise.
+
+For Tab completion, the tests compare the options offered with the ones each
+command parses. A new option that completion does not know fails them.
 
 `billing` is tested against a stub in place of ccusage that prints canned JSON
 in the shape ccusage writes: the layout and the session lookup are what can go

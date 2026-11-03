@@ -9,7 +9,8 @@
 остановленную по Ctrl-Z или брошенную после обрыва ssh-соединения, и возвращает
 её; `codex-procs` и `opencode-procs` делают то же для Codex и opencode.
 `dev-soft-clean.sh` освобождает место, которое три IDE и их инструменты
-занимают кэшами и старыми версиями.
+занимают кэшами и старыми версиями. В bash Tab дополняет флаги каждой команды
+и id сессий текущего каталога — см. [Tab-дополнение](#tab-дополнение).
 
 [English version](README.md) · [История версий](CHANGELOG.md)
 
@@ -85,7 +86,7 @@ Codex файл лежит под датой начала, а она расход
 ```bash
 git clone <этот репозиторий> ide-sessions
 cd ide-sessions
-./install.sh              # девять команд в ~/.local/bin, скилл history и /history — в каждый ассистент
+./install.sh              # девять команд в ~/.local/bin, их Tab-дополнение, скилл history и /history — в каждый ассистент
 ./install.sh --dry-run    # сначала посмотреть, что произойдёт
 ```
 
@@ -97,6 +98,10 @@ cd ide-sessions
 
 Для `--search` в `claude-sessions` и `codex-sessions` нужен ещё ripgrep
 (`rg`); установщик сообщает, есть ли он.
+
+Удалить: `./install.sh --uninstall`.
+
+## Tab-дополнение
 
 Установщик ставит и автодополнение для bash. В новом терминале Tab подставляет
 флаги и подкоманды каждой команды. После `--rm`, `--sum` и `--sum-orig`, а
@@ -129,8 +134,6 @@ complete -F _ccr_complete ccr
 выводит. `_comp_load` есть в bash-completion начиная с 2.12, в более старых —
 `_completion_loader`. Для Codex и opencode — `_ides_resume_codex` и
 `_ides_resume_opencode`.
-
-Удалить: `./install.sh --uninstall`.
 
 ## Поиск: в какой сессии над этим работали
 
@@ -907,7 +910,8 @@ summarized with claude-haiku-4-5-20251001
 | `IDE_SESSIONS_REDACTOR` | `secrets-redact` с `PATH` | через что проходят выжимка и колонка ABOUT; пустое значение — только встроенные шаблоны |
 | `IDE_SESSIONS_TRASH` | `~/.cache/ide-sessions-trash` | куда уходит удалённое |
 | `IDE_SESSIONS_MODELS_JSON` | не задана | каталог models.dev для цен |
-| `IDE_SESSIONS_BIN_DIR` | `~/.local/bin` | куда пишет `install.sh` |
+| `IDE_SESSIONS_BIN_DIR` | `~/.local/bin` | куда `install.sh` ставит команды |
+| `BASH_COMPLETION_USER_DIR` | `~/.local/share/bash-completion` | куда `install.sh` ставит Tab-дополнение, в `completions/` |
 | `CCUSAGE_BIN` | `ccusage` | какой бинарь ccusage запускает `billing` |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | хранилище Claude Code |
 | `CODEX_HOME` | `~/.codex` | хранилище Codex |
@@ -915,8 +919,8 @@ summarized with claude-haiku-4-5-20251001
 | `CLAUDE_PROCS_BIN` | `claude` | какую команду запускает `claude-procs resume` |
 | `CLAUDE_PROCS_WAIT` | `5` | сколько секунд `claude-procs` ждёт после SIGTERM, прежде чем послать SIGKILL |
 | `CLAUDE_PROCS_IDLE` | `120` | сколько секунд без ввода должно пройти, прежде чем `claude-procs` предложит забрать терминал, который держит sshd |
-| `CODEX_PROCS_*`, `OPENCODE_PROCS_*` | | те же переменные для `codex-procs` и `opencode-procs`: `_COMM`, `_BIN`, `_WAIT`, `_IDLE` |
 | `CLAUDE_PROCS_COMM` | `claude` | процессы с каким именем ищет `claude-procs` |
+| `CODEX_PROCS_*`, `OPENCODE_PROCS_*` | | те же четыре для `codex-procs` и `opencode-procs`: `_COMM`, `_BIN`, `_WAIT`, `_IDLE` |
 
 ## Особенности по IDE
 
@@ -993,9 +997,14 @@ tests/test_sessions.sh
 ```
 
 Каждый тест строит одноразовое хранилище во временном каталоге — ни один тест
-не трогает настоящие транскрипты и ни один не зовёт модель. Проверяется
-выжимка: это та часть, которая может быть неверной незаметно, потому что модель
-с готовностью перескажет и выжимку, набитую мусором от хуков.
+не трогает настоящие транскрипты и ни один не зовёт модель. Проверяются список
+и его цвета, удаление, `--search`, колонка ABOUT, таблицы opencode 2.x, команды
+`*-procs`, `install.sh` и Tab-дополнение. Важнее всего выжимка: это
+та часть, которая может быть неверной незаметно, потому что модель с
+готовностью перескажет и выжимку, набитую мусором от хуков.
+
+Для Tab-дополнения тесты сверяют предлагаемые флаги с теми, что разбирает
+каждая команда. Новый флаг, которого дополнение не знает, роняет тесты.
 
 `billing` проверяется с заглушкой вместо ccusage, которая печатает заготовленный
 JSON в том виде, в каком его пишет ccusage: ошибиться здесь можно в раскладке
