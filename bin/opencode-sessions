@@ -115,8 +115,10 @@ Usage: opencode-sessions [-n LIMIT] [-f] [-p] [substring]
                     commit and the last files edited (default: 50)
 
 Search:
-  --search REGEX    only sessions that mention REGEX — Python syntax, any case,
-                    ^ and $ at every line. YOU, AI and TOOLS count the matches
+  --search REGEX    only sessions that mention REGEX — Python syntax, ^ and $
+                    at every line; any case when all lowercase, exact case
+                    with an uppercase letter (as rg --smart-case; (?i)
+                    forces any case). YOU, AI and TOOLS count the matches
                     in your prompts, the model's replies and its tool calls
                     with their output; MATCH shows the latest one, yours first.
                     The most matches in your prompts go last, above the prompt.
@@ -920,9 +922,17 @@ import shutil, subprocess
 SEARCH_ESC = r'\\+(?:[nrtbf"\\/]|u[0-9a-fA-F]{4})'
 SEARCH_ANY = '(?s:.*?)'
 
+def search_case(pattern):
+    # As rg --smart-case: an uppercase letter makes the search case-sensitive,
+    # an all-lowercase pattern matches any case. Escapes (\S, \W, \B) and group
+    # names are not letters of the text; (?i) in the pattern still wins.
+    p = re.sub(r'\\.', '', pattern)
+    p = re.sub(r'\(\?P?<[A-Za-z_]\w*>|\(\?P=\w+\)', '', p)
+    return any(c.isupper() for c in p)
+
 def search_rx(pattern):
     try:
-        rx = re.compile(pattern, re.I | re.M)
+        rx = re.compile(pattern, re.M | (0 if search_case(pattern) else re.I))
     except re.error as e:
         raise SystemExit('--search: not a regular expression: %s' % e)
     if rx.search(''):
@@ -1175,10 +1185,27 @@ def search_rows(rows_file, pattern, min_hits, show_all, extra):
         if len(masked) == len(out):
             out = [(h, r, m) for (h, r, _), m in zip(out, masked)]
     print('#hidden\t%d' % hidden)
+    print('#orphans\t%d\t%d' % search_orphans(rx))
     for hits, row, snip in out:
         print('%s\t%d\t%d\t%d\t%s' % (row, hits[0], hits[1], hits[2], search_mark(snip, rx)))
 
 # ── SEARCH: this IDE ────────────────────────────────────────────────────────
+# Prompts the IDE's own history keeps for a session whose transcript is gone:
+# --search cannot read those sessions, ide-history still shows what was typed.
+# Scoped like the listing: IDE_SEARCH_EXACT is the directory of -p,
+# IDE_SEARCH_SUB the directory substring. Returns (prompts, sessions).
+def search_scoped(cwd):
+    exact = os.environ.get('IDE_SEARCH_EXACT', '')
+    sub = os.environ.get('IDE_SEARCH_SUB', '')
+    if exact and cwd != exact:
+        return False
+    return not sub or sub in (cwd or '')
+
+def search_orphans(rx):
+    # opencode keeps the prompts in the session itself: a deleted session
+    # leaves none behind.
+    return 0, 0
+
 def search_count(rows, rx, pattern, extra):
     # One database, a few megabytes: every part of the listed sessions is read
     # and counted, so there is nothing for ripgrep to narrow. A child session
@@ -1617,22 +1644,37 @@ if [ "$PROJECT_SCOPE" = 1 ]; then
   rows=$(echo "$rows" | awk -F'\t' -v c="$cur" '$2==c')
 fi
 [ -n "$FILTER" ] && rows=$(echo "$rows" | grep -F "$FILTER" || true)
+orphans_hint() {
+  [ "${orphan_n:-0}" -gt 0 ] || return 0
+  echo "$orphan_n prompt(s) in $orphan_s session(s) whose transcript is gone match /$SEARCH/ — the IDE's prompt history keeps them:"
+  # ide-history --grep takes plain text, any case: the pattern itself when it
+  # is plain text, a placeholder otherwise; the same directory scope.
+  local text=TEXT scope=""
+  case "$SEARCH" in *[!A-Za-z0-9_\ ./:@-]*) ;; *) text="'$SEARCH'" ;; esac
+  [ "$PROJECT_SCOPE" = 1 ] && scope=" -p"
+  [ -n "$FILTER" ] && scope=" '$FILTER'"
+  echo "  ide-history --grep $text --ide opencode$scope"
+}
 # --search: one python run over every row. The rows come back with their
 # hits, ordered by them, so -n keeps the best matches rather than the newest.
-if [ -n "$SEARCH" ] && [ -n "$rows" ]; then
+if [ -n "$SEARCH" ]; then
   searched=$(printf '%s\n' "$rows" | grep -c . || true)
   search_in=$(mktemp)
   printf '%s\n' "$rows" > "$search_in"
-  out=$(sum_digest --search "$search_in" "$SEARCH" "$MIN_HITS" "$SEARCH_ALL") || { rm -f "$search_in"; exit 1; }
+  scope_exact=""; [ "$PROJECT_SCOPE" = 1 ] && scope_exact="$(pwd)"
+  out=$(IDE_SEARCH_HOME="" IDE_SEARCH_EXACT="$scope_exact" IDE_SEARCH_SUB="$FILTER" \
+        sum_digest --search "$search_in" "$SEARCH" "$MIN_HITS" "$SEARCH_ALL") || { rm -f "$search_in"; exit 1; }
   rm -f "$search_in"
   hidden=$(printf '%s\n' "$out" | sed -n 's/^#hidden\t//p')
-  rows=$(printf '%s\n' "$out" | grep -v '^#hidden' || true)
+  read -r orphan_n orphan_s <<<"$(printf '%s\n' "$out" | sed -n 's/^#orphans\t//p')"
+  rows=$(printf '%s\n' "$out" | grep -v '^#hidden\|^#orphans' || true)
   if [ -z "$rows" ]; then
     if [ "${hidden:-0}" -gt 0 ]; then
       echo "None of $searched session(s) has /$SEARCH/ in your prompts or the model's replies; $hidden session(s) have it only in tool output — add --all to list them."
     else
       echo "None of $searched session(s) mentions /$SEARCH/$( [ "$MIN_HITS" -gt 1 ] && echo " $MIN_HITS or more times")."
     fi
+    orphans_hint
     exit 0
   fi
 fi
@@ -1946,6 +1988,7 @@ done <<< "$rows"
 echo
 if [ -n "$SEARCH" ]; then
   [ "${hidden:-0}" -gt 0 ] && echo "+$hidden more session(s) have /$SEARCH/ only in tool output — add --all to list them"
+  orphans_hint
   echo "YOU / AI / TOOLS: matches in your prompts / the model's replies / its tool calls and their output."
   echo "MATCH: the latest match — from your prompts if there is one, else from a reply, else from a tool."
   echo

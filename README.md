@@ -169,9 +169,11 @@ claude-sessions -p --search nginx               # this project's sessions only
 claude-sessions k8s --search nginx              # only in directories matching "k8s"
 ```
 
-The pattern is a Python regular expression. The case does not matter, and `^`
-and `$` match at every line. Non-greedy `.*?`, `\b`, and lookarounds work as
-in Python:
+The pattern is a Python regular expression, and `^` and `$` match at every
+line. The case works as in `rg --smart-case`: an all-lowercase pattern matches
+any case, and an uppercase letter makes the search exact. So `sso` also finds
+`Processor` and `Associations`, and `SSO` finds only `SSO`. `(?i)SSO` matches
+any case again. Non-greedy `.*?`, `\b`, and lookarounds work as in Python:
 
 ```bash
 claude-sessions --search 'fluent-?bit|fluentd'
@@ -183,6 +185,19 @@ codex-sessions  --search '(?<=/etc/)nginx'
 Text that the assistant adds by itself is not searched: CLAUDE.md, AGENTS.md,
 rules, reminders, skill bodies. A subagent's work counts as tool work of its
 session.
+
+A session whose transcript is gone cannot be searched, but Claude Code and
+Codex keep your prompts in their own history. When some of those prompts
+match, the listing ends with a line like this, in the same directory scope:
+
+```
+10 prompt(s) in 1 session(s) whose transcript is gone match /SSO/ — the IDE's prompt history keeps them:
+  ide-history --grep 'SSO' --ide claude -p
+```
+
+`ide-history --grep` takes plain text and ignores case, so it can show more
+prompts than the count. opencode keeps the prompts inside the session, and a
+deleted session leaves none.
 
 `claude-sessions` and `codex-sessions` need ripgrep (`rg`). Without it,
 `--search` stops and says how to install it. ripgrep finds the lines that can

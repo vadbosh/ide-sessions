@@ -1613,6 +1613,20 @@ sr_cl() { CLAUDE_CONFIG_DIR="$SR/claude" CLAUDE_CODE_SESSION_ID='' IDE_SESSIONS_
 sr_cx() { CODEX_HOME="$SR/codex" IDE_SESSIONS_REDACTOR='' "$ROOT/bin/codex-sessions" "$@" 2>&1; }
 sr_row() { printf '%s\n' "$1" | awk -v id="$2" '$0 ~ id { print $5 "/" $6 "/" $7; exit }'; }
 
+# Prompts kept in the IDE's history for sessions whose transcript is gone.
+python3 - "$SR" <<'PY'
+import json, sys
+sr = sys.argv[1]
+with open(sr + "/claude/history.jsonl", "w") as fh:
+    for sid, proj, text in (("cccccccc-0000-0000-0000-000000000001", "/work/s", "nginx in a live session"),
+                            ("dddddddd-0000-0000-0000-00000000dead", "/work/s", "fix nginx here"),
+                            ("dddddddd-0000-0000-0000-00000000dead", "/work/s", "and nginx again"),
+                            ("eeeeeeee-0000-0000-0000-00000000dead", "/elsewhere", "nginx there")):
+        fh.write(json.dumps({"display": text, "pastedContents": {}, "timestamp": 1, "project": proj, "sessionId": sid}) + "\n")
+with open(sr + "/codex/history.jsonl", "w") as fh:
+    fh.write(json.dumps({"session_id": "01ffffff-0000-7000-8000-00000000dead", "ts": 1, "text": "nginx gone"}) + "\n")
+PY
+
 out="$(sr_cl --search nginx)"
 contains "search: YOU, AI and TOOLS columns"                  "$out" "TURNS  YOU AI TOOLS"
 contains "search: MATCH replaces ABOUT"                       "$out" "MATCH"
@@ -1652,9 +1666,30 @@ absent   "search: --min-hits drops the rows under it"         "$out" "0000000000
 out="$(sr_cl --search '^nginx')"
 if [ "$(sr_row "$out" 000000000001)" = 1/1/4 ]; then ok "search: ^ holds at every line, across an escaped line break"
 else nope "search: ^ holds at every line, across an escaped line break" "$(sr_row "$out" 000000000001)"; fi
-out="$(sr_cl --search 'ПОЧИНИ\s+NGINX\b')"
-if [ "$(sr_row "$out" 000000000001)" = 1/0/0 ]; then ok "search: any case, Cyrillic included; \\s and \\b work"
-else nope "search: any case, Cyrillic included; \\s and \\b work" "$(sr_row "$out" 000000000001)"; fi
+out="$(sr_cl --search '(?i)ПОЧИНИ\s+NGINX\b')"
+if [ "$(sr_row "$out" 000000000001)" = 1/0/0 ]; then ok "search: (?i) forces any case, Cyrillic included; \\s and \\b work"
+else nope "search: (?i) forces any case, Cyrillic included; \\s and \\b work" "$(sr_row "$out" 000000000001)"; fi
+# Smart case, as rg -S: an uppercase letter makes the search exact.
+out="$(sr_cl --search 'Nginx')"
+if [ "$(sr_row "$out" 000000000001)" = 1/0/0 ]; then ok "search: an uppercase letter makes it case-sensitive"
+else nope "search: an uppercase letter makes it case-sensitive" "$(sr_row "$out" 000000000001)"; fi
+out="$(sr_cl --search 'ПОЧИНИ')"
+absent "search: ... Cyrillic too: ПОЧИНИ does not match почини" "$out" "cccccccc-0000-0000-0000-000000000001"
+out="$(sr_cl --search '^nginx\S*')"
+if [ "$(sr_row "$out" 000000000001)" = 1/1/4 ]; then ok "search: an escape like \\S is not an uppercase letter"
+else nope "search: an escape like \\S is not an uppercase letter" "$(sr_row "$out" 000000000001)"; fi
+out="$(sr_cl --search nginx)"
+contains "search: prompts of sessions without a transcript are counted" "$out" "3 prompt(s) in 2 session(s) whose transcript is gone match /nginx/"
+contains "search: ... with the ide-history command that shows them"    "$out" "ide-history --grep 'nginx' --ide claude"
+out="$(sr_cl work --search nginx)"
+contains "search: ... in the same directory scope as the listing"    "$out" "2 prompt(s) in 1 session(s) whose transcript is gone"
+contains "search: ... and the ide-history command gets it too"       "$out" "ide-history --grep 'nginx' --ide claude 'work'"
+out="$(sr_cl --search 'ngin[x]')"
+contains "search: a regex gets a TEXT placeholder, not itself"       "$out" "ide-history --grep TEXT --ide claude"
+out="$(sr_cl --search zzzz-nothing)"
+absent "search: no orphan line when nothing matches"                 "$out" "transcript is gone"
+out="$(sr_cx --search nginx)"
+contains "search: codex counts its history.jsonl too"                "$out" "1 prompt(s) in 1 session(s) whose transcript is gone match /nginx/"
 out="$(sr_cl --search 'n.*?x -t')"
 contains "search: all hidden says so and names --all"        "$out" "only in tool output — add --all"
 out="$(sr_cl --search 'n.*?x -t' --all)"

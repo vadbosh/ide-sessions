@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.23.0
+
+- **`--search` takes the case as `rg --smart-case` does.** An all-lowercase
+  pattern matches any case, as before; an uppercase letter makes the search
+  exact. `--search SSO` found `Processor`, `Associations` and `compressor`, and
+  20 rows held almost nothing about SSO. Now it finds 11 rows, all with `SSO`
+  itself. `(?i)` in the pattern still forces any case.
+- **Prompts of sessions whose transcript is gone are counted.** Claude Code and
+  Codex keep the prompts in `history.jsonl` after the transcript is deleted.
+  When some of them match, the listing ends with their count and the
+  `ide-history --grep` command that shows them, in the same directory scope.
+  Without it, a search for work done in such a session looked like a search
+  that found nothing.
+
 ## 0.22.2
 
 - **The README brought up to date with the releases since 0.19.0.** Tab
